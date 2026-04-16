@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>IAST Replacer</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -311,68 +312,116 @@ const LETTER_CHARS = "A-Za-z\u0100-\u017F\u1E00-\u1EFF\u00C0-\u00FF";
 const DROPPED_A_MIN_STEM_LEN = 5;
 const VOWELS = new Set([...'aeiouāēīōūṛḷ']);
 
-// Mirrors Python's TITLE_MARKERS — uppercase terms containing these are
-// treated as scripture/book titles and italicized (Bhagavad-gītā, etc.)
-const TITLE_MARKERS = [
-  "gītā", "purāṇa", "upaniṣad", "saṃhitā", "saṁhitā",
-  "rāmāyaṇa", "mahābhārata", "bhāgavatam", "bhāgavata",
-  "sūtra", "śāstra", "smṛti", "brāhmaṇa",
-];
-
-function shouldItalicize(iastForm) {
-  if (!iastForm || iastForm.length < 2) return false;
-  // Lowercase-initial → common noun / technical term → italicize
-  if (iastForm[0] === iastForm[0].toLowerCase() &&
-      iastForm[0] !== iastForm[0].toUpperCase()) return true;
-  // Uppercase but contains a title marker → scripture title → italicize
-  const low = iastForm.toLowerCase();
-  return TITLE_MARKERS.some(m => low.includes(m));
-}
-
 // ---------------------------------------------------------------------------
-// CSV parsing
+// XLSX parsing (JSZip + DOMParser)
+// Italic data lives in xl/styles.xml cell-level font styles.
 // ---------------------------------------------------------------------------
 
-function parseCSV(text) {
-  // Strip BOM if present
-  if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+async function loadXLSX(url) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const buf = await res.arrayBuffer();
+  const zip = await JSZip.loadAsync(buf);
 
-  const rows = [];
-  const lines = text.split(/\r?\n/);
-  if (lines.length === 0) return rows;
+  const stylesXml      = await zip.file('xl/styles.xml').async('string');
+  const xfItalics      = parseXfItalics(stylesXml);
 
-  const headers = parseCSVLine(lines[0]);
+  const ssFile = zip.file('xl/sharedStrings.xml');
+  const sharedStrings  = ssFile
+    ? parseSharedStrings(await ssFile.async('string'))
+    : [];
 
-  for (let i = 1; i < lines.length; i++) {
-    const line = lines[i];
-    if (!line.trim()) continue;
-    const values = parseCSVLine(line);
-    const row = {};
-    headers.forEach((h, idx) => { row[h.trim()] = (values[idx] || '').trim(); });
-    rows.push(row);
-  }
-  return rows;
+  const wsXml = await zip.file('xl/worksheets/sheet1.xml').async('string');
+  return parseWorksheet(wsXml, sharedStrings, xfItalics);
 }
 
-function parseCSVLine(line) {
-  const result = [];
-  let current = '';
-  let inQuotes = false;
+// Returns boolean[] indexed by xf (cell-style) index.
+function parseXfItalics(xml) {
+  const doc = new DOMParser().parseFromString(xml, 'text/xml');
 
-  for (let i = 0; i < line.length; i++) {
-    const ch = line[i];
-    if (ch === '"') {
-      if (inQuotes && line[i + 1] === '"') { current += '"'; i++; }
-      else { inQuotes = !inQuotes; }
-    } else if (ch === ',' && !inQuotes) {
-      result.push(current);
-      current = '';
-    } else {
-      current += ch;
+  // Build font-index → italic map
+  const fontItalic = [];
+  const fontsEl = doc.getElementsByTagName('fonts')[0];
+  if (fontsEl) {
+    for (const font of fontsEl.getElementsByTagName('font')) {
+      const iEls = font.getElementsByTagName('i');
+      // <i/> or <i val="1"/> = italic; <i val="0"/> = explicitly not italic
+      fontItalic.push(iEls.length > 0 && iEls[0].getAttribute('val') !== '0');
     }
   }
-  result.push(current);
-  return result;
+
+  // Build xf-index → italic map via fontId
+  const xfItalics = [];
+  const cellXfsEl = doc.getElementsByTagName('cellXfs')[0];
+  if (cellXfsEl) {
+    for (const xf of cellXfsEl.getElementsByTagName('xf')) {
+      const fontId = parseInt(xf.getAttribute('fontId') || '0', 10);
+      xfItalics.push(fontItalic[fontId] ?? false);
+    }
+  }
+  return xfItalics;
+}
+
+// Returns string[] of shared-string values (text only, no markup needed).
+function parseSharedStrings(xml) {
+  const doc = new DOMParser().parseFromString(xml, 'text/xml');
+  return [...doc.getElementsByTagName('si')].map(si =>
+    [...si.getElementsByTagName('t')].map(t => t.textContent).join('')
+  );
+}
+
+// Returns rows: { IAST, 'Romanized Spelling', iastItalic }
+function parseWorksheet(xml, sharedStrings, xfItalics) {
+  const doc = new DOMParser().parseFromString(xml, 'text/xml');
+  const rows = [];
+  let headers = null; // header value → column letter
+
+  for (const row of doc.getElementsByTagName('row')) {
+    const cells = {};
+
+    for (const c of row.getElementsByTagName('c')) {
+      const ref = c.getAttribute('r') || '';
+      const col = ref.replace(/\d+$/, '');   // "A2" → "A", "AB3" → "AB"
+      const t   = c.getAttribute('t');
+      const s   = parseInt(c.getAttribute('s') ?? '-1', 10);
+      const vEl = c.getElementsByTagName('v')[0];
+
+      let value = '';
+      if (t === 's' && vEl) {
+        value = sharedStrings[parseInt(vEl.textContent, 10)] ?? '';
+      } else if (t === 'inlineStr') {
+        value = [...c.getElementsByTagName('t')].map(n => n.textContent).join('');
+      } else if (vEl) {
+        value = vEl.textContent;
+      }
+
+      cells[col] = {
+        value:  value.trim(),
+        italic: s >= 0 ? (xfItalics[s] ?? false) : false,
+      };
+    }
+
+    const rNum = parseInt(row.getAttribute('r') || '0', 10);
+    if (rNum === 1) {
+      // Header row: map header text → column letter
+      headers = {};
+      for (const [col, cell] of Object.entries(cells)) {
+        if (cell.value) headers[cell.value] = col;
+      }
+    } else if (headers) {
+      const iCol = headers['IAST'];
+      const rCol = headers['Romanized Spelling'];
+      if (!iCol || !rCol) continue;
+      const iCell = cells[iCol], rCell = cells[rCol];
+      if (!iCell?.value || !rCell?.value) continue;
+      rows.push({
+        'IAST':              iCell.value,
+        'Romanized Spelling': rCell.value,
+        iastItalic:          iCell.italic,
+      });
+    }
+  }
+  return rows;
 }
 
 // ---------------------------------------------------------------------------
@@ -435,10 +484,10 @@ function buildReplacements(rows) {
   const replacements = [];
   const seenWrong = new Map();
 
-  function tryAdd(wrong, right, origin) {
+  function tryAdd(wrong, right, origin, italic) {
     wrong = wrong.trim();
     right = right.trim();
-    if (!wrong || !right || wrong === right) return;
+    if (!wrong || !right) return;
     const key = wrong.toLowerCase();
     if (seenWrong.has(key)) return;
 
@@ -446,23 +495,40 @@ function buildReplacements(rows) {
       `(?<![${LETTER_CHARS}])${escapeRegex(wrong)}(?![${LETTER_CHARS}])`,
       'gi'
     );
-    const rule = { wrong, right, origin, pattern };
+
+    if (wrong === right) {
+      // Spelling is already correct — claim the key to block dropped-a variants
+      // from sneaking in a conflicting rule (e.g. "brahman" ← dropped-a of
+      // "brahmana → brāhmaṇa"). If the term is italic, emit an italic-only
+      // rule so it gets wrapped in <em>/\textit{} even with no spelling change.
+      if (italic) {
+        const rule = { wrong, right, origin: 'italic-only', pattern, italic: true, italicOnly: true };
+        seenWrong.set(key, rule);
+        replacements.push(rule);
+      } else {
+        seenWrong.set(key, null);
+      }
+      return;
+    }
+
+    const rule = { wrong, right, origin, pattern, italic: !!italic, italicOnly: false };
     seenWrong.set(key, rule);
     replacements.push(rule);
   }
 
   for (const row of rows) {
-    const iast = (row['IAST'] || '').trim();
-    const rom  = (row['Romanized Spelling'] || '').trim();
+    const iast    = (row['IAST'] || '').trim();
+    const rom     = (row['Romanized Spelling'] || '').trim();
+    const italic  = !!row.iastItalic;
     if (!iast || !rom) continue;
 
     const pairs = expandParentheses(iast, rom);
     for (const [iastForm, romForm] of pairs) {
       const origin = pairs.length === 1 ? 'direct' : 'paren-expansion';
-      tryAdd(romForm, iastForm, origin);
+      tryAdd(romForm, iastForm, origin, italic);
 
       const dropped = generateDroppedAVariant(iastForm, romForm);
-      if (dropped) tryAdd(dropped[1], dropped[0], 'dropped-a');
+      if (dropped) tryAdd(dropped[1], dropped[0], 'dropped-a', italic);
     }
   }
 
@@ -511,13 +577,14 @@ function applyReplacementsToLine(line, replacements, latexMode) {
 
   for (const rule of replacements) {
     for (const m of line.matchAll(rule.pattern)) {
-      const start = m.index;
-      const end   = start + m[0].length;
+      const start   = m.index;
+      const end     = start + m[0].length;
       const matched = m[0];
       const newSpelling = matchCase(
         matched, rule.right, isAtSentenceStart(line, start)
       );
-      if (matched === newSpelling) continue;
+      // Skip if no spelling change AND the rule doesn't carry italic info
+      if (matched === newSpelling && !rule.italic) continue;
       candidates.push({ start, end, matched, newSpelling, rule });
     }
   }
@@ -534,16 +601,20 @@ function applyReplacementsToLine(line, replacements, latexMode) {
     if (c.start >= lastEnd) { kept.push(c); lastEnd = c.end; }
   }
 
-  // Build HTML result (forward) and plain text (reverse)
+  // Build HTML (forward) and plain text (reverse)
   let htmlResult = '';
   let cursor = 0;
   for (const { start, end, newSpelling, rule } of kept) {
     htmlResult += escapeHtml(line.slice(cursor, start));
-    const italic = shouldItalicize(rule.right);
-    if (latexMode && italic) {
-      htmlResult += `<mark>${escapeHtml('\\textit{' + newSpelling + '}')}</mark>`;
-    } else if (!latexMode && italic) {
-      htmlResult += `<mark><em>${escapeHtml(newSpelling)}</em></mark>`;
+    if (rule.italicOnly) {
+      // Spelling unchanged — no green highlight, just italic styling
+      htmlResult += latexMode
+        ? escapeHtml(`\\textit{${newSpelling}}`)
+        : `<em>${escapeHtml(newSpelling)}</em>`;
+    } else if (rule.italic) {
+      htmlResult += latexMode
+        ? `<mark>${escapeHtml(`\\textit{${newSpelling}}`)}</mark>`
+        : `<mark><em>${escapeHtml(newSpelling)}</em></mark>`;
     } else {
       htmlResult += `<mark>${escapeHtml(newSpelling)}</mark>`;
     }
@@ -553,13 +624,22 @@ function applyReplacementsToLine(line, replacements, latexMode) {
 
   let plain = line;
   for (let i = kept.length - 1; i >= 0; i--) {
-    const { start, end, newSpelling, rule } = kept[i];
-    const italic = shouldItalicize(rule.right);
-    const plainOut = (latexMode && italic) ? `\\textit{${newSpelling}}` : newSpelling;
+    const { start, end, matched, newSpelling, rule } = kept[i];
+    // In LaTeX mode, italic terms (changed or not) get \textit{}.
+    // In default mode, plain text is just the spelling (italic is visual only).
+    let plainOut;
+    if (latexMode && rule.italic) {
+      plainOut = `\\textit{${newSpelling}}`;
+    } else if (rule.italicOnly) {
+      plainOut = matched; // no spelling change → leave plain text untouched
+    } else {
+      plainOut = newSpelling;
+    }
     plain = plain.slice(0, start) + plainOut + plain.slice(end);
   }
 
-  return { plain, html: htmlResult, count: kept.length };
+  const spellingChanges = kept.filter(c => !c.rule.italicOnly).length;
+  return { plain, html: htmlResult, count: spellingChanges };
 }
 
 function escapeHtml(s) {
@@ -622,15 +702,12 @@ function setStatus(cls, msg, showSpinner) {
 
 async function loadGuide() {
   try {
-    const res = await fetch('IAST.csv');
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const text = await res.text();
-    const rows = parseCSV(text);
+    const rows = await loadXLSX('IAST.xlsx');
     replacements = buildReplacements(rows);
     setStatus('ready', `Ready — ${replacements.length} replacement rules loaded`, false);
     convertBtn.disabled = false;
   } catch (err) {
-    setStatus('error', `Failed to load IAST.csv: ${err.message}`, false);
+    setStatus('error', `Failed to load IAST.xlsx: ${err.message}`, false);
   }
 }
 
