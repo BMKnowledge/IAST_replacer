@@ -190,6 +190,53 @@
       padding: 0 1px;
     }
 
+    #output-highlight.latex-output {
+      font-family: "Menlo", "Consolas", "Monaco", monospace;
+      font-size: 0.875rem;
+    }
+
+    .output-meta .mode-note { color: #888; font-weight: 400; }
+
+    /* Toggle switch */
+    .toggle-label {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      cursor: pointer;
+      font-size: 0.8125rem;
+      color: #555;
+      user-select: none;
+      margin-top: 14px;
+      white-space: nowrap;
+    }
+
+    .toggle-label input[type="checkbox"] { display: none; }
+
+    .toggle-track {
+      width: 34px;
+      height: 20px;
+      background: #ccc;
+      border-radius: 10px;
+      position: relative;
+      transition: background 0.2s;
+      flex-shrink: 0;
+    }
+
+    .toggle-thumb {
+      position: absolute;
+      width: 14px;
+      height: 14px;
+      background: #fff;
+      border-radius: 50%;
+      top: 3px;
+      left: 3px;
+      transition: left 0.2s;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+    }
+
+    .toggle-label input:checked ~ .toggle-track { background: #5a7a52; }
+    .toggle-label input:checked ~ .toggle-track .toggle-thumb { left: 17px; }
+
     footer {
       text-align: center;
       padding: 16px;
@@ -235,10 +282,13 @@
 
   <div class="controls">
     <div class="arrow">→</div>
-    <button id="convert-btn" disabled>
-      Convert
-    </button>
+    <button id="convert-btn" disabled>Convert</button>
     <button id="copy-btn" disabled>Copy</button>
+    <label class="toggle-label" for="latex-toggle">
+      <input type="checkbox" id="latex-toggle">
+      <span class="toggle-track"><span class="toggle-thumb"></span></span>
+      <span>LaTeX mode</span>
+    </label>
   </div>
 
   <div class="panel">
@@ -260,6 +310,24 @@
 const LETTER_CHARS = "A-Za-z\u0100-\u017F\u1E00-\u1EFF\u00C0-\u00FF";
 const DROPPED_A_MIN_STEM_LEN = 5;
 const VOWELS = new Set([...'aeiouāēīōūṛḷ']);
+
+// Mirrors Python's TITLE_MARKERS — uppercase terms containing these are
+// treated as scripture/book titles and italicized (Bhagavad-gītā, etc.)
+const TITLE_MARKERS = [
+  "gītā", "purāṇa", "upaniṣad", "saṃhitā", "saṁhitā",
+  "rāmāyaṇa", "mahābhārata", "bhāgavatam", "bhāgavata",
+  "sūtra", "śāstra", "smṛti", "brāhmaṇa",
+];
+
+function shouldItalicize(iastForm) {
+  if (!iastForm || iastForm.length < 2) return false;
+  // Lowercase-initial → common noun / technical term → italicize
+  if (iastForm[0] === iastForm[0].toLowerCase() &&
+      iastForm[0] !== iastForm[0].toUpperCase()) return true;
+  // Uppercase but contains a title marker → scripture title → italicize
+  const low = iastForm.toLowerCase();
+  return TITLE_MARKERS.some(m => low.includes(m));
+}
 
 // ---------------------------------------------------------------------------
 // CSV parsing
@@ -438,7 +506,7 @@ function matchCase(original, replacement, sentenceStart) {
 // Apply replacements to a single line
 // ---------------------------------------------------------------------------
 
-function applyReplacementsToLine(line, replacements) {
+function applyReplacementsToLine(line, replacements, latexMode) {
   const candidates = [];
 
   for (const rule of replacements) {
@@ -466,24 +534,29 @@ function applyReplacementsToLine(line, replacements) {
     if (c.start >= lastEnd) { kept.push(c); lastEnd = c.end; }
   }
 
-  // Build plain-text result and HTML result simultaneously (reverse order)
-  let plain = line;
-  const htmlParts = []; // will build html in forward order at the end
-
-  // Build HTML result with <mark> on changed spans
+  // Build HTML result (forward) and plain text (reverse)
   let htmlResult = '';
   let cursor = 0;
-  for (const { start, end, newSpelling } of kept) {
+  for (const { start, end, newSpelling, rule } of kept) {
     htmlResult += escapeHtml(line.slice(cursor, start));
-    htmlResult += `<mark>${escapeHtml(newSpelling)}</mark>`;
+    const italic = shouldItalicize(rule.right);
+    if (latexMode && italic) {
+      htmlResult += `<mark>${escapeHtml('\\textit{' + newSpelling + '}')}</mark>`;
+    } else if (!latexMode && italic) {
+      htmlResult += `<mark><em>${escapeHtml(newSpelling)}</em></mark>`;
+    } else {
+      htmlResult += `<mark>${escapeHtml(newSpelling)}</mark>`;
+    }
     cursor = end;
   }
   htmlResult += escapeHtml(line.slice(cursor));
 
-  // Build plain text (reverse)
+  let plain = line;
   for (let i = kept.length - 1; i >= 0; i--) {
-    const { start, end, newSpelling } = kept[i];
-    plain = plain.slice(0, start) + newSpelling + plain.slice(end);
+    const { start, end, newSpelling, rule } = kept[i];
+    const italic = shouldItalicize(rule.right);
+    const plainOut = (latexMode && italic) ? `\\textit{${newSpelling}}` : newSpelling;
+    plain = plain.slice(0, start) + plainOut + plain.slice(end);
   }
 
   return { plain, html: htmlResult, count: kept.length };
@@ -500,14 +573,14 @@ function escapeHtml(s) {
 // Process full text
 // ---------------------------------------------------------------------------
 
-function processText(text, replacements) {
+function processText(text, replacements, latexMode) {
   const lines = text.split('\n');
   const plainLines = [];
   const htmlLines  = [];
   let totalChanges = 0;
 
   for (const line of lines) {
-    const { plain, html, count } = applyReplacementsToLine(line, replacements);
+    const { plain, html, count } = applyReplacementsToLine(line, replacements, latexMode);
     plainLines.push(plain);
     htmlLines.push(html);
     totalChanges += count;
@@ -561,20 +634,25 @@ async function loadGuide() {
   }
 }
 
+const latexToggle = document.getElementById('latex-toggle');
+
 convertBtn.addEventListener('click', () => {
   if (!replacements) return;
   const input = inputEl.value;
   if (!input.trim()) { outputEl.textContent = ''; outputMeta.innerHTML = ''; copyBtn.disabled = true; return; }
 
-  const { plain, html, totalChanges } = processText(input, replacements);
+  const latexMode = latexToggle.checked;
+  const { plain, html, totalChanges } = processText(input, replacements, latexMode);
 
   outputEl.innerHTML = html;
   outputEl._plain = plain;
+  outputEl.classList.toggle('latex-output', latexMode);
 
   if (totalChanges === 0) {
     outputMeta.innerHTML = 'No changes made.';
   } else {
-    outputMeta.innerHTML = `<span>${totalChanges}</span> replacement${totalChanges === 1 ? '' : 's'} made`;
+    const modeNote = latexMode ? ' <span class="mode-note">(LaTeX)</span>' : '';
+    outputMeta.innerHTML = `<span>${totalChanges}</span> replacement${totalChanges === 1 ? '' : 's'} made${modeNote}`;
   }
   copyBtn.disabled = false;
 });
