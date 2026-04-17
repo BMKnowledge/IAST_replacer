@@ -83,10 +83,11 @@ ITALIC_COMMAND_RE = re.compile(
 class Replacement:
     wrong: str
     right: str
-    origin: str       # "direct" | "paren-expansion" | "dropped-a"
+    origin: str       # "direct" | "paren-expansion" | "dropped-a" | ...
     source_row: int
     pattern: re.Pattern = field(init=False, repr=False)
     case_sensitive: bool = field(init=False, repr=False)
+    ambiguous: bool = field(default=False)  # True when same rom → multiple IAST
 
     def __post_init__(self):
         # Always match case-insensitively. Output casing is preserved from
@@ -112,6 +113,7 @@ class ChangeRecord:
     rule_wrong: str
     rule_right: str
     origin: str
+    ambiguous: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -206,6 +208,91 @@ def generate_dropped_a_variant(iast: str, rom: str):
     return (iast, rom_dropped)
 
 
+# Matches ", Śrī" (IAST) at end of string, with optional whitespace
+_IAST_SRI_SUFFIX_RE = re.compile(r",\s*Śrī\s*$")
+# Matches ", Sri" or ", Shri" (romanized) at end of string, case-insensitive
+_ROM_SRI_SUFFIX_RE = re.compile(r",\s*Sh?ri\s*$", re.IGNORECASE)
+
+
+def generate_sri_variants(iast: str, rom: str) -> list[tuple[str, str]]:
+    """
+    For comma-inverted index entries like 'Madhvācārya, Śrī' / 'Madhvacharya, Sri',
+    generate the name-first forms that appear in running text:
+      - 'Madhvacharya'       -> 'Madhvācārya'
+      - 'Sri Madhvacharya'   -> 'Śrī Madhvācārya'
+      - 'Shri Madhvacharya'  -> 'Śrī Madhvācārya'
+    Returns a list of (iast_form, rom_form) tuples.
+    """
+    iast_m = _IAST_SRI_SUFFIX_RE.search(iast)
+    rom_m = _ROM_SRI_SUFFIX_RE.search(rom)
+    if not iast_m or not rom_m:
+        return []
+
+    name_iast = iast[: iast_m.start()].strip()
+    name_rom = rom[: rom_m.start()].strip()
+    if not name_iast or not name_rom:
+        return []
+
+    return [
+        (name_iast, name_rom),                          # bare name
+        (f"Śrī {name_iast}", f"Sri {name_rom}"),        # Sri prefix
+        (f"Śrī {name_iast}", f"Shri {name_rom}"),       # Shri prefix
+    ]
+
+
+# Separators used in compound romanized terms
+_SEP_RE = re.compile(r"[-\s]")
+
+
+def generate_compound_variants(iast: str, rom: str) -> list[tuple[str, str]]:
+    """
+    For compound terms written with hyphens or spaces, generate separator-
+    normalised variants so that users who write them differently still get
+    corrected.
+
+    Given "Yoga-māyā" / "Yoga-maya":
+      - "Yogamaya"   (separator removed, letters joined)
+      - "Yoga maya"  (hyphen → space, or vice-versa)
+      - "Yogmaya"    (junction dropped-a: first component's trailing 'a'
+                      elided before the join, a common informal usage)
+
+    Only applied when the romanized form contains at least one hyphen or
+    internal space (i.e. is a genuine compound).
+    """
+    parts = _SEP_RE.split(rom)
+    if len(parts) < 2:
+        return []
+
+    iast_parts = _SEP_RE.split(iast)
+    if len(iast_parts) != len(parts):
+        return []
+
+    # joined (no separator) and space variants.
+    # The IAST target is always the *canonical* iast (with separators),
+    # so that e.g. "Yogamaya" → "Yoga-māyā" not the mangled "Yogamāyā".
+    joined_rom = "".join(parts)
+    spaced_rom = " ".join(parts)
+
+    variants: list[tuple[str, str]] = []
+    if joined_rom != rom:
+        variants.append((iast, joined_rom))
+    if spaced_rom != rom:
+        variants.append((iast, spaced_rom))
+
+    # junction dropped-a: if first component ends in plain 'a' (not ā)
+    # and has a useful stem, also generate the elided form
+    # e.g. "Yoga-maya" → wrong="Yogmaya", right="Yoga-māyā"
+    first_rom = parts[0]
+    if (first_rom.endswith("a")
+            and not first_rom.endswith("ā")
+            and len(first_rom) > 2):
+        elided_rom = first_rom[:-1] + "".join(parts[1:])
+        if elided_rom != joined_rom:
+            variants.append((iast, elided_rom))
+
+    return variants
+
+
 # ---------------------------------------------------------------------------
 # 3. Build replacement rules
 # ---------------------------------------------------------------------------
@@ -216,13 +303,17 @@ def build_replacements(
     col_rom=COL_ROMANIZED,
     enable_dropped_a=True,
     enable_paren_expansion=True,
+    enable_sri_variants=True,
+    enable_compound_variants=True,
     latex_mode=False,
 ):
     replacements: list[Replacement] = []
     seen_wrong: dict[str, Replacement] = {}
+    # rom_key -> set of distinct IAST forms (lowercased), for ambiguity detection
+    rom_to_iast: dict[str, set[str]] = {}
     stats = {
         "total_rows": 0, "direct": 0, "paren_expansion": 0, "dropped_a": 0,
-        "italic_only": 0,
+        "italic_only": 0, "sri_variant": 0, "compound_variant": 0,
         "skipped_duplicate": 0, "skipped_same": 0, "skipped_empty": 0,
     }
 
@@ -232,19 +323,20 @@ def build_replacements(
             stats["skipped_empty"] += 1
             return
         if wrong == right:
-            # When latex_mode is on, we keep these rules so they can still
-            # be italicized (no spelling change, but \textit{} wrapping).
-            # Otherwise they're no-ops and skipped.
             if not latex_mode:
                 stats["skipped_same"] += 1
                 return
-            # Only keep identical entries that are italic-worthy; otherwise
-            # they really are no-ops.
             if not should_italicize(right):
                 stats["skipped_same"] += 1
                 return
             origin = "italic-only"
         key = wrong.lower()
+        # Track distinct IAST targets only for direct/paren-expansion rules —
+        # those are the only ones that reflect real semantic ambiguity in the
+        # guide. Generated variants (dropped-a, sri-variant, compound-variant)
+        # can collide across entries as an artifact of generation, not meaning.
+        if origin in ("direct", "paren-expansion", "italic-only"):
+            rom_to_iast.setdefault(key, set()).add(right.lower())
         if key in seen_wrong:
             stats["skipped_duplicate"] += 1
             return
@@ -276,10 +368,28 @@ def build_replacements(
                 if dropped is not None:
                     try_add(dropped[1], dropped[0], "dropped-a", i)
 
-          
+            if enable_sri_variants:
+                for var_iast, var_rom in generate_sri_variants(iast_form, rom_form):
+                    try_add(var_rom, var_iast, "sri-variant", i)
+
+            if enable_compound_variants:
+                for var_iast, var_rom in generate_compound_variants(iast_form, rom_form):
+                    try_add(var_rom, var_iast, "compound-variant", i)
+
+    # Build the set of romanized keys that are genuinely ambiguous:
+    # same romanization maps to two or more IAST forms that differ
+    # beyond capitalisation (e.g. "vasudeva" → "vasudeva" vs "vāsudeva").
+    ambiguous_rom_keys: set[str] = {
+        key for key, iast_set in rom_to_iast.items()
+        if len(iast_set) > 1
+    }
+
+    # Attach ambiguity flag to each rule
+    for rule in replacements:
+        rule.ambiguous = rule.wrong.lower() in ambiguous_rom_keys
 
     replacements.sort(key=lambda r: (len(r.wrong), r.wrong), reverse=True)
-    return replacements, stats
+    return replacements, stats, ambiguous_rom_keys
 
 
 # ---------------------------------------------------------------------------
@@ -484,6 +594,7 @@ def process_tex_content(lines, replacements, filename="<unknown>",
                 matched_text=matched, replaced_with=replaced,
                 rule_wrong=rule.wrong, rule_right=rule.right,
                 origin=rule.origin,
+                ambiguous=getattr(rule, "ambiguous", False),
             ))
     return new_lines, all_changes
 
@@ -730,12 +841,36 @@ def print_load_stats(stats, total_rules):
     print(f"    - paren-expansion:  {stats.get('paren_expansion', 0)}")
     print(f"    - dropped-a:        {stats.get('dropped_a', 0)}")
     print(f"    - sri-variant:      {stats.get('sri_variant', 0)}")
+    print(f"    - compound-variant: {stats.get('compound_variant', 0)}")
     if stats.get('italic_only', 0):
         print(f"    - italic-only:      {stats.get('italic_only', 0)}")
     print(f"  Skipped:")
     print(f"    - same in both cols: {stats['skipped_same']}")
     print(f"    - empty:             {stats['skipped_empty']}")
     print(f"    - duplicates:        {stats['skipped_duplicate']}")
+
+
+def print_ambiguity_report(ambiguous_keys: set[str], replacements) -> None:
+    """
+    Warn about romanized terms that map to more than one distinct IAST form.
+    Only the first rule encountered was kept; the rest were silently dropped.
+    """
+    if not ambiguous_keys:
+        return
+    # Build a lookup: rom_key -> list of (wrong, right) kept rules
+    kept: dict[str, tuple[str, str]] = {
+        r.wrong.lower(): (r.wrong, r.right)
+        for r in replacements
+        if r.wrong.lower() in ambiguous_keys
+    }
+    print(f"\n  {'!' * 60}")
+    print(f"  AMBIGUOUS ROMANIZATIONS ({len(ambiguous_keys)} term(s))")
+    print(f"  These romanized forms map to multiple IAST spellings.")
+    print(f"  Only the first match was kept; review flagged changes manually.")
+    print(f"  {'!' * 60}")
+    for key in sorted(ambiguous_keys):
+        wrong, right = kept.get(key, (key, "?"))
+        print(f"    '{wrong}'  →  '{right}'  [kept]  (other IAST form(s) exist)")
 
 
 def print_change_report(changes):
@@ -751,25 +886,32 @@ def print_change_report(changes):
     for c in changes:
         by_origin[c.origin] = by_origin.get(c.origin, 0) + 1
 
+    n_ambiguous = sum(1 for c in changes if c.ambiguous)
+
     print(f"\n  {'=' * 60}")
     print(f"  Total changes: {len(changes)}")
-    for origin in ["direct", "paren-expansion", "dropped-a", "sri-variant", "italic-only"]:
+    for origin in ["direct", "paren-expansion", "dropped-a", "sri-variant",
+                   "compound-variant", "italic-only"]:
         n = by_origin.get(origin, 0)
         if n:
-            print(f"    {origin}:{' ' * (16 - len(origin))}{n}")
+            print(f"    {origin}:{' ' * (17 - len(origin))}{n}")
+    if n_ambiguous:
+        print(f"  Needs manual review (ambiguous): {n_ambiguous}")
     print(f"  {'=' * 60}")
 
     for fname, file_changes in by_file.items():
         print(f"\n  File: {fname}  ({len(file_changes)} changes)")
         print(f"  {'-' * 56}")
-        for origin in ["direct", "paren-expansion", "dropped-a", "sri-variant", "italic-only"]:
+        for origin in ["direct", "paren-expansion", "dropped-a", "sri-variant",
+                       "compound-variant", "italic-only"]:
             group = [c for c in file_changes if c.origin == origin]
             if not group:
                 continue
             print(f"    [{origin}]")
             for c in group:
+                flag = " [!AMBIGUOUS — review]" if c.ambiguous else ""
                 print(f"      Line {c.line_no:>5}: "
-                      f"'{c.matched_text}' → '{c.replaced_with}'")
+                      f"'{c.matched_text}' → '{c.replaced_with}'{flag}")
 
 
 def print_unknown_report(flagged, filename):
@@ -851,6 +993,10 @@ def main():
     parser.add_argument("--no-sri-variants", action="store_true",
         help="Disable generation of name-first / Sri-prefix variants for "
              "comma-inverted entries like 'Madhvacharya, Sri'.")
+    parser.add_argument("--no-compound-variants", action="store_true",
+        help="Disable generation of separator-normalised and junction-dropped-a "
+             "variants for compound terms (e.g. 'Yogmaya' / 'Yogamaya' for "
+             "'Yoga-maya').")
     parser.add_argument("--flag-unknown", action="store_true",
         help="Report Sanskrit-looking terms not in the guide.")
     parser.add_argument("--no-backup", action="store_true",
@@ -872,15 +1018,18 @@ def main():
             else load_from_google_sheet(
                 args.sheet_id, args.worksheet, args.credentials))
 
-    replacements, stats = build_replacements(
+    replacements, stats, ambiguous_keys = build_replacements(
         rows,
         col_iast=args.col_iast,
         col_rom=args.col_romanized,
         enable_dropped_a=not args.no_dropped_a,
         enable_paren_expansion=not args.no_paren_expansion,
+        enable_sri_variants=not args.no_sri_variants,
+        enable_compound_variants=not args.no_compound_variants,
         latex_mode=args.latex,
     )
     print_load_stats(stats, len(replacements))
+    print_ambiguity_report(ambiguous_keys, replacements)
 
     if not replacements:
         print("  ERROR: No rules built. Check column headers?")
