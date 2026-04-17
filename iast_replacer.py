@@ -206,6 +206,38 @@ def generate_dropped_a_variant(iast: str, rom: str):
     return (iast, rom_dropped)
 
 
+# Matches ", Śrī" (IAST) at end of string, with optional whitespace
+_IAST_SRI_SUFFIX_RE = re.compile(r",\s*Śrī\s*$")
+# Matches ", Sri" or ", Shri" (romanized) at end of string, case-insensitive
+_ROM_SRI_SUFFIX_RE = re.compile(r",\s*Sh?ri\s*$", re.IGNORECASE)
+
+
+def generate_sri_variants(iast: str, rom: str) -> list[tuple[str, str]]:
+    """
+    For comma-inverted index entries like 'Madhvācārya, Śrī' / 'Madhvacharya, Sri',
+    generate the name-first forms that appear in running text:
+      - 'Madhvacharya'       -> 'Madhvācārya'
+      - 'Sri Madhvacharya'   -> 'Śrī Madhvācārya'
+      - 'Shri Madhvacharya'  -> 'Śrī Madhvācārya'
+    Returns a list of (iast_form, rom_form) tuples.
+    """
+    iast_m = _IAST_SRI_SUFFIX_RE.search(iast)
+    rom_m = _ROM_SRI_SUFFIX_RE.search(rom)
+    if not iast_m or not rom_m:
+        return []
+
+    name_iast = iast[: iast_m.start()].strip()
+    name_rom = rom[: rom_m.start()].strip()
+    if not name_iast or not name_rom:
+        return []
+
+    return [
+        (name_iast, name_rom),                          # bare name
+        (f"Śrī {name_iast}", f"Sri {name_rom}"),        # Sri prefix
+        (f"Śrī {name_iast}", f"Shri {name_rom}"),       # Shri prefix
+    ]
+
+
 # ---------------------------------------------------------------------------
 # 3. Build replacement rules
 # ---------------------------------------------------------------------------
@@ -216,6 +248,7 @@ def build_replacements(
     col_rom=COL_ROMANIZED,
     enable_dropped_a=True,
     enable_paren_expansion=True,
+    enable_sri_variants=True,
     latex_mode=False,
 ):
     replacements: list[Replacement] = []
@@ -275,6 +308,10 @@ def build_replacements(
                 dropped = generate_dropped_a_variant(iast_form, rom_form)
                 if dropped is not None:
                     try_add(dropped[1], dropped[0], "dropped-a", i)
+
+            if enable_sri_variants:
+                for var_iast, var_rom in generate_sri_variants(iast_form, rom_form):
+                    try_add(var_rom, var_iast, "sri-variant", i)
 
     replacements.sort(key=lambda r: (len(r.wrong), r.wrong), reverse=True)
     return replacements, stats
@@ -727,6 +764,7 @@ def print_load_stats(stats, total_rules):
     print(f"    - direct:           {stats.get('direct', 0)}")
     print(f"    - paren-expansion:  {stats.get('paren_expansion', 0)}")
     print(f"    - dropped-a:        {stats.get('dropped_a', 0)}")
+    print(f"    - sri-variant:      {stats.get('sri_variant', 0)}")
     if stats.get('italic_only', 0):
         print(f"    - italic-only:      {stats.get('italic_only', 0)}")
     print(f"  Skipped:")
@@ -750,7 +788,7 @@ def print_change_report(changes):
 
     print(f"\n  {'=' * 60}")
     print(f"  Total changes: {len(changes)}")
-    for origin in ["direct", "paren-expansion", "dropped-a", "italic-only"]:
+    for origin in ["direct", "paren-expansion", "dropped-a", "sri-variant", "italic-only"]:
         n = by_origin.get(origin, 0)
         if n:
             print(f"    {origin}:{' ' * (16 - len(origin))}{n}")
@@ -759,7 +797,7 @@ def print_change_report(changes):
     for fname, file_changes in by_file.items():
         print(f"\n  File: {fname}  ({len(file_changes)} changes)")
         print(f"  {'-' * 56}")
-        for origin in ["direct", "paren-expansion", "dropped-a", "italic-only"]:
+        for origin in ["direct", "paren-expansion", "dropped-a", "sri-variant", "italic-only"]:
             group = [c for c in file_changes if c.origin == origin]
             if not group:
                 continue
@@ -845,6 +883,9 @@ def main():
         help="Disable dropped-a variant generation.")
     parser.add_argument("--no-paren-expansion", action="store_true",
         help="Disable parenthesis expansion.")
+    parser.add_argument("--no-sri-variants", action="store_true",
+        help="Disable generation of name-first / Sri-prefix variants for "
+             "comma-inverted entries like 'Madhvacharya, Sri'.")
     parser.add_argument("--flag-unknown", action="store_true",
         help="Report Sanskrit-looking terms not in the guide.")
     parser.add_argument("--no-backup", action="store_true",
@@ -872,6 +913,7 @@ def main():
         col_rom=args.col_romanized,
         enable_dropped_a=not args.no_dropped_a,
         enable_paren_expansion=not args.no_paren_expansion,
+        enable_sri_variants=not args.no_sri_variants,
         latex_mode=args.latex,
     )
     print_load_stats(stats, len(replacements))
