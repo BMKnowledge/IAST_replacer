@@ -87,7 +87,8 @@ class Replacement:
     source_row: int
     pattern: re.Pattern = field(init=False, repr=False)
     case_sensitive: bool = field(init=False, repr=False)
-    ambiguous: bool = field(default=False)  # True when same rom → multiple IAST
+    ambiguous: bool = field(default=False)       # True when rom → multiple distinct IAST
+    casing_variant: bool = field(default=False)  # True when rom → same IAST, different case
 
     def __post_init__(self):
         # Always match case-insensitively. Output casing is preserved from
@@ -114,6 +115,7 @@ class ChangeRecord:
     rule_right: str
     origin: str
     ambiguous: bool = False
+    casing_variant: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -309,8 +311,6 @@ def build_replacements(
 ):
     replacements: list[Replacement] = []
     seen_wrong: dict[str, Replacement] = {}
-    # rom_key -> set of distinct IAST forms (lowercased), for ambiguity detection
-    rom_to_iast: dict[str, set[str]] = {}
     stats = {
         "total_rows": 0, "direct": 0, "paren_expansion": 0, "dropped_a": 0,
         "italic_only": 0, "sri_variant": 0, "compound_variant": 0,
@@ -331,12 +331,6 @@ def build_replacements(
                 return
             origin = "italic-only"
         key = wrong.lower()
-        # Track distinct IAST targets only for direct/paren-expansion rules —
-        # those are the only ones that reflect real semantic ambiguity in the
-        # guide. Generated variants (dropped-a, sri-variant, compound-variant)
-        # can collide across entries as an artifact of generation, not meaning.
-        if origin in ("direct", "paren-expansion", "italic-only"):
-            rom_to_iast.setdefault(key, set()).add(right.lower())
         if key in seen_wrong:
             stats["skipped_duplicate"] += 1
             return
@@ -347,6 +341,20 @@ def build_replacements(
         replacements.append(rule)
         stats[origin.replace("-", "_")] = stats.get(
             origin.replace("-", "_"), 0) + 1
+
+    # Pre-pass: build rom→IAST mapping from raw rows to detect ambiguities.
+    # Done separately so that same-as-itself no-ops (e.g. "Vasudeva"→"Vasudeva")
+    # are still counted, which try_add() would otherwise skip early.
+    rom_to_iast: dict[str, set[str]] = {}
+    for row in rows:
+        iast_raw = row.get(col_iast, "").strip()
+        rom_raw  = row.get(col_rom, "").strip()
+        if not iast_raw or not rom_raw:
+            continue
+        pairs_raw = (expand_parentheses(iast_raw, rom_raw)
+                     if enable_paren_expansion else [(iast_raw, rom_raw)])
+        for iast_form, rom_form in pairs_raw:
+            rom_to_iast.setdefault(rom_form.lower(), set()).add(iast_form)
 
     for i, row in enumerate(rows, start=2):
         stats["total_rows"] += 1
@@ -376,20 +384,38 @@ def build_replacements(
                 for var_iast, var_rom in generate_compound_variants(iast_form, rom_form):
                     try_add(var_rom, var_iast, "compound-variant", i)
 
-    # Build the set of romanized keys that are genuinely ambiguous:
-    # same romanization maps to two or more IAST forms that differ
-    # beyond capitalisation (e.g. "vasudeva" → "vasudeva" vs "vāsudeva").
-    ambiguous_rom_keys: set[str] = {
-        key for key, iast_set in rom_to_iast.items()
-        if len(iast_set) > 1
-    }
+    # Classify each conflicted romanized key into two categories:
+    #
+    # casing_variant_keys  — same IAST modulo capitalisation only
+    #   e.g. "yoga-maya" → {"Yoga-māyā", "yoga-māyā"}
+    #   match_case() already picks the right form; we annotate in the report
+    #   so users can verify capitalisation was applied correctly.
+    #
+    # true_ambiguous_keys  — IAST forms differ even after lowercasing
+    #   e.g. "vasudeva" → {"Vasudeva", "Vāsudeva"} — genuinely different words;
+    #   flag for manual review and show both candidates.
+    casing_variant_keys: set[str] = set()
+    true_ambiguous_keys: set[str] = set()
+    # rom_key -> sorted list of all IAST forms (for display in reports)
+    ambiguity_map: dict[str, list[str]] = {}
 
-    # Attach ambiguity flag to each rule
+    for key, iast_set in rom_to_iast.items():
+        if len(iast_set) < 2:
+            continue
+        lowered = {i.lower() for i in iast_set}
+        ambiguity_map[key] = sorted(iast_set)
+        if len(lowered) == 1:
+            casing_variant_keys.add(key)
+        else:
+            true_ambiguous_keys.add(key)
+
     for rule in replacements:
-        rule.ambiguous = rule.wrong.lower() in ambiguous_rom_keys
+        k = rule.wrong.lower()
+        rule.ambiguous = k in true_ambiguous_keys
+        rule.casing_variant = k in casing_variant_keys
 
     replacements.sort(key=lambda r: (len(r.wrong), r.wrong), reverse=True)
-    return replacements, stats, ambiguous_rom_keys
+    return replacements, stats, true_ambiguous_keys, casing_variant_keys, ambiguity_map
 
 
 # ---------------------------------------------------------------------------
@@ -595,6 +621,7 @@ def process_tex_content(lines, replacements, filename="<unknown>",
                 rule_wrong=rule.wrong, rule_right=rule.right,
                 origin=rule.origin,
                 ambiguous=getattr(rule, "ambiguous", False),
+                casing_variant=getattr(rule, "casing_variant", False),
             ))
     return new_lines, all_changes
 
@@ -850,27 +877,49 @@ def print_load_stats(stats, total_rules):
     print(f"    - duplicates:        {stats['skipped_duplicate']}")
 
 
-def print_ambiguity_report(ambiguous_keys: set[str], replacements) -> None:
+def print_ambiguity_report(
+    true_ambiguous_keys: set[str],
+    casing_variant_keys: set[str],
+    ambiguity_map: dict[str, list[str]],
+    replacements,
+) -> None:
     """
-    Warn about romanized terms that map to more than one distinct IAST form.
-    Only the first rule encountered was kept; the rest were silently dropped.
+    Report two categories of romanized terms that map to multiple IAST forms.
+
+    True ambiguities: same romanization, genuinely different IAST
+      e.g. "vasudeva" → Vasudeva (Krishna's father) OR Vāsudeva (Krishna).
+      The first rule in the guide is applied; changes are flagged for review.
+
+    Casing variants: same IAST word in uppercase and lowercase forms
+      e.g. "yoga-maya" → Yoga-māyā (proper) or yoga-māyā (common noun).
+      match_case() already selects the right capitalisation; changes are
+      annotated so users can spot-check.
     """
-    if not ambiguous_keys:
-        return
-    # Build a lookup: rom_key -> list of (wrong, right) kept rules
-    kept: dict[str, tuple[str, str]] = {
-        r.wrong.lower(): (r.wrong, r.right)
-        for r in replacements
-        if r.wrong.lower() in ambiguous_keys
-    }
-    print(f"\n  {'!' * 60}")
-    print(f"  AMBIGUOUS ROMANIZATIONS ({len(ambiguous_keys)} term(s))")
-    print(f"  These romanized forms map to multiple IAST spellings.")
-    print(f"  Only the first match was kept; review flagged changes manually.")
-    print(f"  {'!' * 60}")
-    for key in sorted(ambiguous_keys):
-        wrong, right = kept.get(key, (key, "?"))
-        print(f"    '{wrong}'  →  '{right}'  [kept]  (other IAST form(s) exist)")
+    if true_ambiguous_keys:
+        kept: dict[str, tuple[str, str]] = {
+            r.wrong.lower(): (r.wrong, r.right)
+            for r in replacements
+            if r.wrong.lower() in true_ambiguous_keys
+        }
+        print(f"\n  {'!' * 60}")
+        print(f"  TRUE IAST AMBIGUITIES ({len(true_ambiguous_keys)} term(s))")
+        print(f"  These romanized forms map to distinct IAST spellings.")
+        print(f"  The guide's first match is applied; flagged [!AMBIGUOUS] in report.")
+        print(f"  {'!' * 60}")
+        for key in sorted(true_ambiguous_keys):
+            wrong, right = kept.get(key, (key, "?"))
+            all_forms = " / ".join(ambiguity_map.get(key, [right]))
+            print(f"    '{wrong}'  →  {all_forms}")
+
+    if casing_variant_keys:
+        print(f"\n  {'~' * 60}")
+        print(f"  CASING VARIANTS ({len(casing_variant_keys)} term(s))")
+        print(f"  These terms exist in both Capitalised and lowercase forms.")
+        print(f"  Capitalisation is auto-selected; flagged [casing-variant] in report.")
+        print(f"  {'~' * 60}")
+        for key in sorted(casing_variant_keys):
+            all_forms = " / ".join(ambiguity_map.get(key, [key]))
+            print(f"    '{key}'  →  {all_forms}")
 
 
 def print_change_report(changes):
@@ -886,7 +935,8 @@ def print_change_report(changes):
     for c in changes:
         by_origin[c.origin] = by_origin.get(c.origin, 0) + 1
 
-    n_ambiguous = sum(1 for c in changes if c.ambiguous)
+    n_ambiguous      = sum(1 for c in changes if c.ambiguous)
+    n_casing_variant = sum(1 for c in changes if c.casing_variant)
 
     print(f"\n  {'=' * 60}")
     print(f"  Total changes: {len(changes)}")
@@ -896,7 +946,9 @@ def print_change_report(changes):
         if n:
             print(f"    {origin}:{' ' * (17 - len(origin))}{n}")
     if n_ambiguous:
-        print(f"  Needs manual review (ambiguous): {n_ambiguous}")
+        print(f"  Needs manual review (!AMBIGUOUS):  {n_ambiguous}")
+    if n_casing_variant:
+        print(f"  Casing auto-selected (verify):     {n_casing_variant}")
     print(f"  {'=' * 60}")
 
     for fname, file_changes in by_file.items():
@@ -909,7 +961,12 @@ def print_change_report(changes):
                 continue
             print(f"    [{origin}]")
             for c in group:
-                flag = " [!AMBIGUOUS — review]" if c.ambiguous else ""
+                if c.ambiguous:
+                    flag = " [!AMBIGUOUS — review]"
+                elif c.casing_variant:
+                    flag = " [casing-variant — verify]"
+                else:
+                    flag = ""
                 print(f"      Line {c.line_no:>5}: "
                       f"'{c.matched_text}' → '{c.replaced_with}'{flag}")
 
@@ -1018,18 +1075,21 @@ def main():
             else load_from_google_sheet(
                 args.sheet_id, args.worksheet, args.credentials))
 
-    replacements, stats, ambiguous_keys = build_replacements(
-        rows,
-        col_iast=args.col_iast,
-        col_rom=args.col_romanized,
-        enable_dropped_a=not args.no_dropped_a,
-        enable_paren_expansion=not args.no_paren_expansion,
-        enable_sri_variants=not args.no_sri_variants,
-        enable_compound_variants=not args.no_compound_variants,
-        latex_mode=args.latex,
-    )
+    replacements, stats, true_ambiguous_keys, casing_variant_keys, ambiguity_map = \
+        build_replacements(
+            rows,
+            col_iast=args.col_iast,
+            col_rom=args.col_romanized,
+            enable_dropped_a=not args.no_dropped_a,
+            enable_paren_expansion=not args.no_paren_expansion,
+            enable_sri_variants=not args.no_sri_variants,
+            enable_compound_variants=not args.no_compound_variants,
+            latex_mode=args.latex,
+        )
     print_load_stats(stats, len(replacements))
-    print_ambiguity_report(ambiguous_keys, replacements)
+    print_ambiguity_report(
+        true_ambiguous_keys, casing_variant_keys, ambiguity_map, replacements
+    )
 
     if not replacements:
         print("  ERROR: No rules built. Check column headers?")
