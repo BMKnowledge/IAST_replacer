@@ -557,6 +557,67 @@
       // Variant generation
       // ---------------------------------------------------------------------------
 
+      // Chars with multiple possible romanisations (canonical + English phonetic).
+      const _VOWEL_VARIANT_CHOICES = new Map([
+        ["ī", ["i", "ee"]], ["Ī", ["I", "Ee"]],
+        ["ū", ["u", "oo"]], ["Ū", ["U", "Oo"]],
+        ["ś", ["sh", "s"]], ["Ś", ["Sh", "S"]],
+      ]);
+
+      // Chars with a single canonical romanisation.
+      const _STANDARD_IAST_MAP = new Map([
+        ["ā", "a"],  ["Ā", "A"],
+        ["ṛ", "ri"], ["Ṛ", "Ri"], ["ṝ", "ri"],
+        ["ḷ", "l"],  ["Ḷ", "L"],
+        ["ṃ", "m"],  ["Ṃ", "M"],  ["ṁ", "m"], ["Ṁ", "M"],
+        ["ḥ", "h"],  ["Ḥ", "H"],
+        ["ṣ", "sh"], ["Ṣ", "Sh"],
+        ["ñ", "n"],  ["Ñ", "N"],
+        ["ṭ", "t"],  ["Ṭ", "T"],
+        ["ḍ", "d"],  ["Ḍ", "D"],
+        ["ṇ", "n"],  ["Ṇ", "N"],
+        ["ḻ", "l"],  ["Ḻ", "L"],
+        ["ṅ", "n"],  ["Ṅ", "N"],
+        ["c", "ch"], ["C", "Ch"],
+      ]);
+
+      const _VOWEL_VARIANT_MAX_COMBOS = 32;
+
+      /**
+       * Generate alternative romanisations for common English phonetic spellings:
+       *   ī → ee  (līlā → leela),  ū → oo  (pūjā → pooja),  ś → s  (Śrī → Sri)
+       *
+       * Mirrors Python generate_vowel_variants() in iast_replacer.py.
+       * Returns an array of [iast, altRom] pairs; the canonical rom is excluded.
+       */
+      function generateVowelVariants(iast, rom) {
+        if (![...iast].some((ch) => _VOWEL_VARIANT_CHOICES.has(ch))) return [];
+
+        const options = [];
+        let totalCombos = 1;
+        for (const ch of iast) {
+          let opts;
+          if (_VOWEL_VARIANT_CHOICES.has(ch)) {
+            opts = _VOWEL_VARIANT_CHOICES.get(ch);
+          } else if (_STANDARD_IAST_MAP.has(ch)) {
+            opts = [_STANDARD_IAST_MAP.get(ch)];
+          } else {
+            opts = [ch]; // ASCII letter, punctuation, space — pass through
+          }
+          options.push(opts);
+          totalCombos *= opts.length;
+          if (totalCombos > _VOWEL_VARIANT_MAX_COMBOS) return [];
+        }
+
+        // Cartesian product → all romanisation combinations
+        const combos = options.reduce(
+          (acc, opts) => acc.flatMap((combo) => opts.map((opt) => combo + opt)),
+          [""],
+        );
+
+        return combos.filter((v) => v !== rom).map((v) => [iast, v]);
+      }
+
       function expandParentheses(iast, rom) {
         if (!iast.includes("(") && !rom.includes("(")) return [[iast, rom]];
 
@@ -675,6 +736,9 @@
 
             const dropped = generateDroppedAVariant(iastForm, romForm);
             if (dropped) tryAdd(dropped[1], dropped[0], "dropped-a", italic);
+
+            for (const [vIast, vRom] of generateVowelVariants(iastForm, romForm))
+              tryAdd(vRom, vIast, "vowel-variant", italic);
           }
         }
 
