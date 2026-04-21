@@ -654,11 +654,215 @@ def apply_replacements_to_line(line, replacements, latex_mode=False,
 
 
 # ---------------------------------------------------------------------------
+# 4.5. Enquote conversion (LaTeX mode)
+# ---------------------------------------------------------------------------
+# Inlined from enquote_wrapper.py — converts quotation marks to \enquote{}.
+# File I/O and stand-alone CLI are omitted; only text-processing logic kept.
+#
+# Supports all common quote styles:
+#   ``double backtick-prime''        →  \enquote{…}
+#   `single backtick-prime'          →  \enquote{…}
+#   "straight double"                →  \enquote{…}
+#   'straight single' (conservative) →  \enquote{…}
+#   "smart double"  /  'smart single'→  \enquote{…}
+#   „German low-high"                →  \enquote{…}
+#   »guillemets«  /  «guillemets»    →  \enquote{…}
+#
+# Protected from conversion:
+#   - Full-line TeX comments (% …)
+#   - Inline comments after unescaped %
+#   - \verb|…| / \verb*|…| inline verbatim
+#   - Already-existing \enquote{…} blocks (including nested)
+#   - Block verbatim environments — handled by the outer loop in
+#     process_tex_content, which already skips those lines entirely.
+
+_EQ_COMMENT_LINE = re.compile(r"^\s*%")
+
+_EQ_PATTERNS = [
+    # ``LaTeX double quotes''
+    re.compile(r"``([^`\n]|`(?!`))*?''"),
+    # `LaTeX single quotes'
+    re.compile(r"(?<!`)`([^'\n]|'(?!'))*?'"),
+    # German low-high  „ … "
+    re.compile(r"\u201e[^\u201d\n]+?\u201d"),
+    # Guillemets
+    re.compile(r"»[^»«\n]+?«"),
+    re.compile(r"«[^»«\n]+?»"),
+    # Smart double quotes
+    re.compile(r"\u201c[^\u201c\n]+?\u201d"),
+    # Smart single quotes
+    re.compile(r"\u2018[^\u2018\n]+?\u2019"),
+    # Straight double quotes
+    re.compile(r'"[^"\n]+?"'),
+    # Straight single quotes (conservative — word-boundary anchored)
+    re.compile(r"(?<![\w\\])'[^'\n]+?'(?!\w)"),
+]
+
+_EQ_VERB_INLINE = re.compile(r"\\verb\*?(.)(.*?)\1")
+
+
+def _eq_make_token(registry: list, value: str) -> str:
+    token = f"ENQUOTEPROTECT_{uuid.uuid4().hex}_END"
+    registry.append((token, value))
+    return token
+
+
+def _eq_tokenize_spans(
+    text: str, spans: list[tuple[int, int, str]], registry: list
+) -> str:
+    if not spans:
+        return text
+    parts: list[str] = []
+    cursor = 0
+    for start, end, original in spans:
+        parts.append(text[cursor:start])
+        parts.append(_eq_make_token(registry, original))
+        cursor = end
+    parts.append(text[cursor:])
+    return "".join(parts)
+
+
+def _eq_restore_regions(text: str, registry: list) -> str:
+    for token, original in registry:
+        text = text.replace(token, original)
+    return text
+
+
+def _eq_find_enquote_spans(text: str) -> list[tuple[int, int]]:
+    """Return (start, end) of every top-level \\enquote{…}, handling nesting."""
+    spans: list[tuple[int, int]] = []
+    search_from = 0
+    marker = r"\enquote{"
+    marker_len = len(marker)
+    while True:
+        start = text.find(marker, search_from)
+        if start == -1:
+            break
+        depth = 0
+        i = start + marker_len - 1  # opening '{'
+        end = -1
+        while i < len(text):
+            if text[i] == "{":
+                depth += 1
+            elif text[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    end = i + 1
+                    break
+            i += 1
+        if end == -1:
+            search_from = start + marker_len
+        else:
+            spans.append((start, end))
+            search_from = end
+    return spans
+
+
+def _eq_protect_regions(text: str) -> tuple[str, list]:
+    """
+    Replace \\verb|…| and existing \\enquote{…} with tokens so they are
+    not touched by the quote-conversion patterns.
+    """
+    registry: list = []
+    protected_spans: list[tuple[int, int, str]] = []
+    for m in _EQ_VERB_INLINE.finditer(text):
+        protected_spans.append((m.start(), m.end(), m.group(0)))
+    for start, end in _eq_find_enquote_spans(text):
+        protected_spans.append((start, end, text[start:end]))
+    if not protected_spans:
+        return text, registry
+    protected_spans.sort(key=lambda t: t[0])
+    merged: list[tuple[int, int, str]] = []
+    last_end = -1
+    for start, end, original in protected_spans:
+        if start < last_end:
+            continue
+        merged.append((start, end, original))
+        last_end = end
+    return _eq_tokenize_spans(text, merged, registry), registry
+
+
+def _eq_convert_match(match: re.Match) -> str:  # type: ignore[type-arg]
+    text = match.group(0)
+    pairs = [
+        ("``", "''"),
+        ("`", "'"),
+        ("\u201e", "\u201d"),
+        ("»", "«"),
+        ("«", "»"),
+        ("\u201c", "\u201d"),
+        ("\u2018", "\u2019"),
+        ('"', '"'),
+        ("'", "'"),
+    ]
+    for left, right in pairs:
+        if (
+            text.startswith(left)
+            and text.endswith(right)
+            and len(text) >= len(left) + len(right)
+        ):
+            inner = text[len(left): len(text) - len(right)]
+            return f"\\enquote{{{inner}}}"
+    return text  # should not reach here
+
+
+def _eq_split_tex_comment(line: str) -> tuple[str, str]:
+    """Split a TeX line at the first unescaped % into (code, comment)."""
+    escaped = False
+    for i, ch in enumerate(line):
+        if escaped:
+            escaped = False
+            continue
+        if ch == "\\":
+            escaped = True
+            continue
+        if ch == "%":
+            return line[:i], line[i:]
+    return line, ""
+
+
+def enquote_process_line(line: str) -> tuple[str, list[tuple[str, str]]]:
+    """
+    Convert quotation marks to \\enquote{} on a single TeX line.
+
+    Returns (new_line, changes) where *changes* is a list of
+    (original_quote_text, enquote_form) pairs — one entry per conversion.
+
+    Full-line TeX comments, inline \\verb|…|, and existing \\enquote{…}
+    blocks are left untouched.
+    """
+    stripped = line.rstrip("\r\n")
+    ending = line[len(stripped):]
+
+    if _EQ_COMMENT_LINE.match(stripped):
+        return line, []
+
+    code, comment = _eq_split_tex_comment(stripped)
+    code, registry = _eq_protect_regions(code)
+
+    found_changes: list[tuple[str, str]] = []
+
+    def tracking_convert(m: re.Match) -> str:  # type: ignore[type-arg]
+        original = m.group(0)
+        result = _eq_convert_match(m)
+        if result != original:
+            found_changes.append((original, result))
+        return result
+
+    for pattern in _EQ_PATTERNS:
+        code = pattern.sub(tracking_convert, code)
+
+    code = _eq_restore_regions(code, registry)
+    return code + comment + ending, found_changes
+
+
+# ---------------------------------------------------------------------------
 # 5. File processing
 # ---------------------------------------------------------------------------
 
 def process_tex_content(lines, replacements, filename="<unknown>",
-                        latex_mode=False, italic_cmd="textit"):
+                        latex_mode=False, italic_cmd="textit",
+                        enable_enquote=True):
     new_lines = []
     all_changes = []
     inside = False
@@ -688,7 +892,6 @@ def process_tex_content(lines, replacements, filename="<unknown>",
             latex_mode=latex_mode,
             italic_cmd=italic_cmd,
         )
-        new_lines.append(new_line)
         for matched, replaced, rule in changes:
             all_changes.append(ChangeRecord(
                 file=filename, line_no=line_no,
@@ -698,6 +901,20 @@ def process_tex_content(lines, replacements, filename="<unknown>",
                 ambiguous=getattr(rule, "ambiguous", False),
                 casing_variant=getattr(rule, "casing_variant", False),
             ))
+
+        # Enquote pass — convert quotation marks to \enquote{} (LaTeX mode only)
+        if latex_mode and enable_enquote:
+            new_line, eq_changes = enquote_process_line(new_line)
+            for original_quote, enquoted in eq_changes:
+                all_changes.append(ChangeRecord(
+                    file=filename, line_no=line_no,
+                    matched_text=original_quote,
+                    replaced_with=enquoted,
+                    rule_wrong="", rule_right="",
+                    origin="enquote",
+                ))
+
+        new_lines.append(new_line)
     return new_lines, all_changes
 
 
@@ -1017,7 +1234,7 @@ def print_change_report(changes):
     print(f"\n  {'=' * 60}")
     print(f"  Total changes: {len(changes)}")
     for origin in ["direct", "paren-expansion", "dropped-a", "sri-variant",
-                   "compound-variant", "vowel-variant", "italic-only"]:
+                   "compound-variant", "vowel-variant", "italic-only", "enquote"]:
         n = by_origin.get(origin, 0)
         if n:
             print(f"    {origin}:{' ' * (17 - len(origin))}{n}")
@@ -1069,13 +1286,14 @@ def print_unknown_report(flagged, filename):
 
 def process_file(filepath, replacements, dry_run, flag_unknown,
                  known_terms, no_backup, latex_mode=False,
-                 italic_cmd="textit"):
+                 italic_cmd="textit", enable_enquote=True):
     with open(filepath, "r", encoding="utf-8") as f:
         lines = f.readlines()
 
     new_lines, changes = process_tex_content(
         lines, replacements, filename=str(filepath),
         latex_mode=latex_mode, italic_cmd=italic_cmd,
+        enable_enquote=enable_enquote,
     )
 
     if flag_unknown:
@@ -1147,6 +1365,9 @@ def main():
         help="LaTeX command to use for italicizing (default: textit). "
              "Use 'emph' if you want the toggle-italic behavior in "
              "already-italicized contexts like section headings.")
+    parser.add_argument("--no-enquote", action="store_true",
+        help="When --latex is on, skip the automatic conversion of quotation "
+             "marks to \\enquote{}. Has no effect without --latex.")
 
     args = parser.parse_args()
 
@@ -1206,7 +1427,10 @@ def main():
 
     mode = "DRY RUN" if args.dry_run else "APPLYING CHANGES"
     if args.latex:
-        mode += f" (LaTeX italic mode: \\{args.italic_cmd}{{}})"
+        latex_features = [f"\\{args.italic_cmd}{{}} italics"]
+        if not args.no_enquote:
+            latex_features.append("\\enquote{} quotes")
+        mode += f" (LaTeX mode: {', '.join(latex_features)})"
     print(f"\n[3/3] Processing — {mode}...")
 
     all_changes = []
@@ -1219,6 +1443,7 @@ def main():
             no_backup=args.no_backup,
             latex_mode=args.latex,
             italic_cmd=args.italic_cmd,
+            enable_enquote=args.latex and not args.no_enquote,
         ))
 
     print_change_report(all_changes)
