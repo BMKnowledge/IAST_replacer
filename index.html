@@ -781,6 +781,12 @@
 
             for (const [vIast, vRom] of generateVowelVariants(iastForm, romForm))
               tryAdd(vRom, vIast, "vowel-variant", italic);
+
+            // Register an italic-only rule for the IAST form itself so that text
+            // already containing correct IAST characters (e.g. "ṛṣis") is still
+            // wrapped in <em>/\textit{} — the rom-form rule won't match it.
+            if (iastForm !== romForm)
+              tryAdd(iastForm, iastForm, "italic-only", italic);
           }
         }
 
