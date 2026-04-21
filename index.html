@@ -590,6 +590,45 @@
        * Mirrors Python generate_vowel_variants() in iast_replacer.py.
        * Returns an array of [iast, altRom] pairs; the canonical rom is excluded.
        */
+      /**
+       * For compound terms with hyphens or spaces, generate separator-normalised
+       * variants so users who write them differently still get corrected.
+       *
+       * Given "karma-yoga" / "karma-yoga":
+       *   "karmayoga"  (joined)
+       *   "karma yoga" (space)
+       *   "karmyoga"   (junction dropped-a: first component trailing 'a' elided)
+       *
+       * Mirrors Python generate_compound_variants() in iast_replacer.py.
+       */
+      function generateCompoundVariants(iast, rom) {
+        const parts = rom.split(/[-\s]/);
+        if (parts.length < 2) return [];
+
+        const iastParts = iast.split(/[-\s]/);
+        if (iastParts.length !== parts.length) return [];
+
+        const joinedRom = parts.join("");
+        const spacedRom = parts.join(" ");
+
+        const variants = [];
+        if (joinedRom !== rom) variants.push([iast, joinedRom]);
+        if (spacedRom !== rom) variants.push([iast, spacedRom]);
+
+        // Junction dropped-a: "Yoga-maya" → wrong="Yogmaya", right="Yoga-māyā"
+        const firstRom = parts[0];
+        if (
+          firstRom.endsWith("a") &&
+          !firstRom.endsWith("\u0101") && // not ā
+          firstRom.length > 2
+        ) {
+          const elidedRom = firstRom.slice(0, -1) + parts.slice(1).join("");
+          if (elidedRom !== joinedRom) variants.push([iast, elidedRom]);
+        }
+
+        return variants;
+      }
+
       function generateVowelVariants(iast, rom) {
         if (![...iast].some((ch) => _VOWEL_VARIANT_CHOICES.has(ch))) return [];
 
@@ -736,6 +775,9 @@
 
             const dropped = generateDroppedAVariant(iastForm, romForm);
             if (dropped) tryAdd(dropped[1], dropped[0], "dropped-a", italic);
+
+            for (const [vIast, vRom] of generateCompoundVariants(iastForm, romForm))
+              tryAdd(vRom, vIast, "compound-variant", italic);
 
             for (const [vIast, vRom] of generateVowelVariants(iastForm, romForm))
               tryAdd(vRom, vIast, "vowel-variant", italic);
