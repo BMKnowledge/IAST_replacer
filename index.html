@@ -847,6 +847,133 @@
       }
 
       // ---------------------------------------------------------------------------
+      // Enquote conversion (LaTeX mode)
+      // ---------------------------------------------------------------------------
+      // Converts quotation marks to \enquote{} when LaTeX mode is on.
+      // Mirrors the Python enquote_process_line() logic from iast_replacer.py.
+
+      const _EQ_PATTERNS = [
+        { re: /``([^`\n]|`(?!`))*?''/g,        lLen: 2, rLen: 2 }, // ``...''
+        { re: /(?<!`)`([^'\n]|'(?!'))*?'/g,     lLen: 1, rLen: 1 }, // `...'
+        { re: /\u201e[^\u201d\n]+?\u201d/g,      lLen: 1, rLen: 1 }, // „..."
+        { re: /»[^»«\n]+?«/g,                    lLen: 1, rLen: 1 }, // »...«
+        { re: /«[^»«\n]+?»/g,                    lLen: 1, rLen: 1 }, // «...»
+        { re: /\u201c[^\u201c\n]+?\u201d/g,      lLen: 1, rLen: 1 }, // "..."
+        { re: /\u2018[^\u2018\n]+?\u2019/g,      lLen: 1, rLen: 1 }, // '...'
+        { re: /"[^"\n]+?"/g,                      lLen: 1, rLen: 1 }, // "..."
+        { re: /(?<![\w\\])'[^'\n]+?'(?!\w)/g,   lLen: 1, rLen: 1 }, // '...' conservative
+      ];
+
+      function _eqFindTexCommentIndex(line) {
+        let escaped = false;
+        for (let i = 0; i < line.length; i++) {
+          if (escaped) { escaped = false; continue; }
+          if (line[i] === "\\") { escaped = true; continue; }
+          if (line[i] === "%") return i;
+        }
+        return -1;
+      }
+
+      function _eqFindEnquoteSpans(text) {
+        const spans = [];
+        const marker = "\\enquote{";
+        let from = 0;
+        while (true) {
+          const start = text.indexOf(marker, from);
+          if (start === -1) break;
+          let depth = 0, i = start + marker.length - 1, end = -1;
+          while (i < text.length) {
+            if (text[i] === "{") depth++;
+            else if (text[i] === "}") { if (--depth === 0) { end = i + 1; break; } }
+            i++;
+          }
+          if (end === -1) { from = start + marker.length; }
+          else { spans.push([start, end]); from = end; }
+        }
+        return spans;
+      }
+
+      function _eqProtectRegions(text) {
+        const registry = [];
+        const spans = [];
+        for (const m of text.matchAll(/\\verb\*?(.).*?\1/g))
+          spans.push([m.index, m.index + m[0].length, m[0]]);
+        for (const [s, e] of _eqFindEnquoteSpans(text))
+          spans.push([s, e, text.slice(s, e)]);
+        if (!spans.length) return { tokenized: text, registry };
+        spans.sort((a, b) => a[0] - b[0]);
+        const merged = [];
+        let lastEnd = -1;
+        for (const [s, e, orig] of spans) {
+          if (s < lastEnd) continue;
+          merged.push([s, e, orig]);
+          lastEnd = e;
+        }
+        let tokenized = "", cursor = 0;
+        for (const [s, e, orig] of merged) {
+          tokenized += text.slice(cursor, s);
+          const token = `EQPROTECT_${Math.random().toString(36).slice(2)}_END`;
+          registry.push([token, orig]);
+          tokenized += token;
+          cursor = e;
+        }
+        tokenized += text.slice(cursor);
+        return { tokenized, registry };
+      }
+
+      function _eqRestoreRegions(text, registry) {
+        for (const [token, orig] of registry) text = text.replaceAll(token, orig);
+        return text;
+      }
+
+      function applyEnquoteToLine(plain, html) {
+        // Full-line TeX comment — leave entirely untouched
+        if (/^\s*%/.test(plain)) return { plain, html, count: 0 };
+
+        const cIdx = _eqFindTexCommentIndex(plain);
+        const plainCode    = cIdx >= 0 ? plain.slice(0, cIdx) : plain;
+        const plainComment = cIdx >= 0 ? plain.slice(cIdx)    : "";
+
+        // Protect \verb|...|  and existing \enquote{...} from substitution
+        const { tokenized: tokPlain, registry: regPlain } = _eqProtectRegions(plainCode);
+        let newCode = tokPlain;
+        let count = 0;
+
+        for (const { re, lLen, rLen } of _EQ_PATTERNS) {
+          re.lastIndex = 0;
+          newCode = newCode.replace(re, (match) => {
+            count++;
+            return `\\enquote{${match.slice(lLen, match.length - rLen)}}`;
+          });
+        }
+        newCode = _eqRestoreRegions(newCode, regPlain);
+
+        if (count === 0) return { plain, html, count: 0 };
+
+        const newPlain = newCode + plainComment;
+
+        // HTML: apply same patterns to the html code portion, wrapping each
+        // conversion in <mark> so the change is highlighted in the preview
+        const hCIdx    = _eqFindTexCommentIndex(html);
+        const htmlCode    = hCIdx >= 0 ? html.slice(0, hCIdx) : html;
+        const htmlComment = hCIdx >= 0 ? html.slice(hCIdx)    : "";
+
+        const { tokenized: tokHtml, registry: regHtml } = _eqProtectRegions(htmlCode);
+        let newHtmlCode = tokHtml;
+        for (const { re, lLen, rLen } of _EQ_PATTERNS) {
+          re.lastIndex = 0;
+          newHtmlCode = newHtmlCode.replace(re, (match) => {
+            const inner = match.slice(lLen, match.length - rLen);
+            return `<mark>\\enquote{${inner}}</mark>`;
+          });
+        }
+        newHtmlCode = _eqRestoreRegions(newHtmlCode, regHtml);
+        const newHtml = newHtmlCode + htmlComment;
+
+        return { plain: newPlain, html: newHtml, count };
+      }
+
+      // ---------------------------------------------------------------------------
       // Process full text
       // ---------------------------------------------------------------------------
 
@@ -858,12 +985,18 @@
         const allUnknowns = new Set();
 
         for (const line of lines) {
-          const { plain, html, count, unknowns } = applyReplacementsToLine(
+          let { plain, html, count, unknowns } = applyReplacementsToLine(
             line,
             replacements,
             latexMode,
             knownTerms,
           );
+          if (latexMode) {
+            const eq = applyEnquoteToLine(plain, html);
+            plain = eq.plain;
+            html  = eq.html;
+            count += eq.count;
+          }
           plainLines.push(plain);
           htmlLines.push(html);
           totalChanges += count;
