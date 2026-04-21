@@ -768,9 +768,15 @@
 
       const SENTENCE_END_RE = /[.!?]["'"')\]]*\s+$/;
 
-      function isAtSentenceStart(line, pos) {
+      function isAtSentenceStart(line, pos, end) {
         const before = line.slice(0, pos);
-        if (before.trim() === "") return true;
+        if (before.trim() === "") {
+          // Standalone term (nothing non-whitespace after the match) → use the
+          // guide's canonical casing rather than forcing a sentence-initial capital.
+          // e.g. "Karma" alone → "karma"; "Karma is key" → "Karma".
+          if (end !== undefined && !line.slice(end).trim()) return false;
+          return true;
+        }
         if (SENTENCE_END_RE.test(before)) return true;
         return false;
       }
@@ -816,7 +822,7 @@
             const newSpelling = matchCase(
               matched,
               rule.right,
-              isAtSentenceStart(line, start),
+              isAtSentenceStart(line, start, end),
             );
             // Skip if no spelling change AND the rule doesn't carry italic info
             if (matched === newSpelling && !rule.italic) continue;
