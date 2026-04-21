@@ -22,6 +22,7 @@ import argparse
 import csv
 import re
 import sys
+import uuid
 from pathlib import Path
 from dataclasses import dataclass, field
 
@@ -295,6 +296,74 @@ def generate_compound_variants(iast: str, rom: str) -> list[tuple[str, str]]:
     return variants
 
 
+# Common English phonetic variants for IAST chars. First entry is the BM
+# convention already used in the guide's Romanised column; additional entries
+# are common English spellings we want to catch (Leela, Shree, pooja, …).
+_VOWEL_VARIANT_CHOICES = {
+    "ī": ("i", "ee"),   "Ī": ("I", "Ee"),
+    "ū": ("u", "oo"),   "Ū": ("U", "Oo"),
+    "ś": ("sh", "s"),   "Ś": ("Sh", "S"),
+}
+
+# IAST chars that always map to the same romanisation (no variants).
+_STANDARD_IAST_MAP = {
+    "ā": "a",   "Ā": "A",
+    "ṛ": "ri",  "Ṛ": "Ri",  "ṝ": "ri",
+    "ḷ": "l",   "Ḷ": "L",
+    "ṃ": "m",   "Ṃ": "M",   "ṁ": "m",  "Ṁ": "M",
+    "ḥ": "h",   "Ḥ": "H",
+    "ṣ": "sh",  "Ṣ": "Sh",
+    "ñ": "n",   "Ñ": "N",
+    "ṭ": "t",   "Ṭ": "T",
+    "ḍ": "d",   "Ḍ": "D",
+    "ṇ": "n",   "Ṇ": "N",
+    "ḻ": "l",   "Ḻ": "L",    "ṅ": "n",   "Ṅ": "N",
+    "c": "ch",  "C": "Ch",
+}
+
+# Cap combinations for pathological inputs — 2^n grows quickly
+_VOWEL_VARIANT_MAX_COMBOS = 32
+
+
+def generate_vowel_variants(iast: str, rom: str) -> list[tuple[str, str]]:
+    """
+    Generate alternative romanisations that reflect common English phonetic
+    spellings of IAST characters:
+        ī → ee   (e.g. "Leela" for līlā, "Shree" for Śrī)
+        ū → oo   (e.g. "pooja" for pūjā)
+        ś → s    (e.g. "Sri" for Śrī where canonical uses "Shri"; both handled)
+
+    Variants are produced by enumerating all combinations of choices for
+    variant-eligible IAST chars. The canonical romanisation `rom` (already
+    a direct rule) is excluded from the output to avoid duplicates.
+
+    Returns an empty list when the IAST contains no variant-eligible chars,
+    or when the combination count would exceed a safety cap.
+    """
+    if not any(ch in _VOWEL_VARIANT_CHOICES for ch in iast):
+        return []
+
+    # For each IAST char, list its possible romanised substitutions.
+    options: list[tuple[str, ...]] = []
+    total_combos = 1
+    for ch in iast:
+        if ch in _VOWEL_VARIANT_CHOICES:
+            opts = _VOWEL_VARIANT_CHOICES[ch]
+        elif ch in _STANDARD_IAST_MAP:
+            opts = (_STANDARD_IAST_MAP[ch],)
+        else:
+            opts = (ch,)  # pass through (ASCII letter, punctuation, space)
+        options.append(opts)
+        total_combos *= len(opts)
+        if total_combos > _VOWEL_VARIANT_MAX_COMBOS:
+            return []
+
+    import itertools
+    combos: set[str] = {"".join(c) for c in itertools.product(*options)}
+    combos.discard(rom)
+    return [(iast, v) for v in combos]
+
+
 # ---------------------------------------------------------------------------
 # 3. Build replacement rules
 # ---------------------------------------------------------------------------
@@ -307,6 +376,7 @@ def build_replacements(
     enable_paren_expansion=True,
     enable_sri_variants=True,
     enable_compound_variants=True,
+    enable_vowel_variants=True,
     latex_mode=False,
 ):
     replacements: list[Replacement] = []
@@ -314,6 +384,7 @@ def build_replacements(
     stats = {
         "total_rows": 0, "direct": 0, "paren_expansion": 0, "dropped_a": 0,
         "italic_only": 0, "sri_variant": 0, "compound_variant": 0,
+        "vowel_variant": 0,
         "skipped_duplicate": 0, "skipped_same": 0, "skipped_empty": 0,
     }
 
@@ -383,6 +454,10 @@ def build_replacements(
             if enable_compound_variants:
                 for var_iast, var_rom in generate_compound_variants(iast_form, rom_form):
                     try_add(var_rom, var_iast, "compound-variant", i)
+
+            if enable_vowel_variants:
+                for var_iast, var_rom in generate_vowel_variants(iast_form, rom_form):
+                    try_add(var_rom, var_iast, "vowel-variant", i)
 
     # Classify each conflicted romanized key into two categories:
     #
@@ -869,6 +944,7 @@ def print_load_stats(stats, total_rules):
     print(f"    - dropped-a:        {stats.get('dropped_a', 0)}")
     print(f"    - sri-variant:      {stats.get('sri_variant', 0)}")
     print(f"    - compound-variant: {stats.get('compound_variant', 0)}")
+    print(f"    - vowel-variant:    {stats.get('vowel_variant', 0)}")
     if stats.get('italic_only', 0):
         print(f"    - italic-only:      {stats.get('italic_only', 0)}")
     print(f"  Skipped:")
@@ -941,7 +1017,7 @@ def print_change_report(changes):
     print(f"\n  {'=' * 60}")
     print(f"  Total changes: {len(changes)}")
     for origin in ["direct", "paren-expansion", "dropped-a", "sri-variant",
-                   "compound-variant", "italic-only"]:
+                   "compound-variant", "vowel-variant", "italic-only"]:
         n = by_origin.get(origin, 0)
         if n:
             print(f"    {origin}:{' ' * (17 - len(origin))}{n}")
@@ -1054,6 +1130,10 @@ def main():
         help="Disable generation of separator-normalised and junction-dropped-a "
              "variants for compound terms (e.g. 'Yogmaya' / 'Yogamaya' for "
              "'Yoga-maya').")
+    parser.add_argument("--no-vowel-variants", action="store_true",
+        help="Disable generation of common English phonetic spellings for IAST "
+             "vowels/consonants (e.g. 'Leela' for līlā, 'pooja' for pūjā, "
+             "'Sri' for Śrī via the s→ś path).")
     parser.add_argument("--flag-unknown", action="store_true",
         help="Report Sanskrit-looking terms not in the guide.")
     parser.add_argument("--no-backup", action="store_true",
@@ -1084,6 +1164,7 @@ def main():
             enable_paren_expansion=not args.no_paren_expansion,
             enable_sri_variants=not args.no_sri_variants,
             enable_compound_variants=not args.no_compound_variants,
+            enable_vowel_variants=not args.no_vowel_variants,
             latex_mode=args.latex,
         )
     print_load_stats(stats, len(replacements))
