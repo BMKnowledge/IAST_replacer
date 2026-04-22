@@ -236,6 +236,15 @@
         padding: 0 1px;
       }
 
+      /* Term replaced with the "default" form when an alternate exists in the guide */
+      #output-highlight mark.alternate {
+        background: #fde8c8;
+        color: #7a4000;
+        border-radius: 2px;
+        padding: 0 1px;
+        border-bottom: 1px dashed #c47a00;
+      }
+
       #output-highlight mark.unknown {
         background: #fff0c2;
         color: #7a5800;
@@ -496,11 +505,12 @@
         );
       }
 
-      // Returns rows: { IAST, 'Romanized Spelling', iastItalic }
+      // Returns rows: { IAST, 'Romanized Spelling', iastItalic, isDefault }
       function parseWorksheet(xml, sharedStrings, xfItalics) {
         const doc = new DOMParser().parseFromString(xml, "text/xml");
         const rows = [];
         let headers = null; // header value → column letter
+        let notesCol = null; // column letter for the notes/context column
 
         for (const row of doc.getElementsByTagName("row")) {
           const cells = {};
@@ -536,6 +546,8 @@
             for (const [col, cell] of Object.entries(cells)) {
               if (cell.value) headers[cell.value] = col;
             }
+            // Notes column is the third column (C) — it may have any header name.
+            notesCol = "C";
           } else if (headers) {
             const iCol = headers["IAST"];
             const rCol = headers["Romanized Spelling"];
@@ -543,10 +555,12 @@
             const iCell = cells[iCol],
               rCell = cells[rCol];
             if (!iCell?.value || !rCell?.value) continue;
+            const notes = (cells[notesCol]?.value || "").trim().toLowerCase();
             rows.push({
               IAST: iCell.value,
               "Romanized Spelling": rCell.value,
               iastItalic: iCell.italic,
+              isDefault: notes === "default",
             });
           }
         }
@@ -569,6 +583,11 @@
         // but some systems write it as plain 'c' (e.g. acarya / acharya).
         ["c", ["ch", "c"]],
         ["C", ["Ch", "C"]],
+        // ā can stay as ā (correct IAST) or be simplified to a (English phonetic).
+        // Including both lets the engine catch partial-IAST input like "māya" or
+        // "mayā" (where the user typed some diacritics but not all of them).
+        ["ā", ["a", "ā"]],
+        ["Ā", ["A", "Ā"]],
       ]);
 
       // Chars with a single canonical romanisation.
@@ -743,12 +762,34 @@
         const replacements = [];
         const seenWrong = new Map();
 
-        function tryAdd(wrong, right, origin, italic) {
+        /**
+         * Register a replacement rule.
+         *
+         * isDefault — true when this row is the guide's designated "default"
+         *   form for terms that have multiple entries (column C = "default").
+         *   A default rule beats any previously-registered non-default rule
+         *   for the same romanized form, enabling correct priority when the
+         *   guide lists e.g. "Māyā / Maya (as personality)" BEFORE
+         *   "māyā / maya (default)".
+         */
+        function tryAdd(wrong, right, origin, italic, isDefault = false) {
           wrong = wrong.trim();
           right = right.trim();
           if (!wrong || !right) return;
           const key = wrong.toLowerCase();
-          if (seenWrong.has(key)) return;
+
+          let hasAlternate = false;
+          if (seenWrong.has(key)) {
+            const existing = seenWrong.get(key);
+            // A default rule may evict a previously-registered non-default one.
+            if (isDefault && existing && !existing.isDefault) {
+              const idx = replacements.indexOf(existing);
+              if (idx !== -1) replacements.splice(idx, 1);
+              hasAlternate = true; // won over a competing entry
+            } else {
+              return; // keep the existing registration
+            }
+          }
 
           const pattern = new RegExp(
             `(?<![${LETTER_CHARS}])${escapeRegex(wrong)}(?![${LETTER_CHARS}])`,
@@ -762,12 +803,13 @@
             // rule so it gets wrapped in <em>/\textit{} even with no spelling change.
             if (italic) {
               const rule = {
-                wrong,
-                right,
+                wrong, right,
                 origin: "italic-only",
                 pattern,
                 italic: true,
                 italicOnly: true,
+                isDefault,
+                hasAlternate,
               };
               seenWrong.set(key, rule);
               replacements.push(rule);
@@ -778,12 +820,13 @@
           }
 
           const rule = {
-            wrong,
-            right,
+            wrong, right,
             origin,
             pattern,
             italic: !!italic,
             italicOnly: false,
+            isDefault,
+            hasAlternate,
           };
           seenWrong.set(key, rule);
           replacements.push(rule);
@@ -793,26 +836,23 @@
           const iast = (row["IAST"] || "").trim();
           const rom = (row["Romanized Spelling"] || "").trim();
           const italic = !!row.iastItalic;
+          const isDefault = !!row.isDefault;
           if (!iast || !rom) continue;
 
           const pairs = expandParentheses(iast, rom);
           for (const [iastForm, romForm] of pairs) {
             const origin = pairs.length === 1 ? "direct" : "paren-expansion";
-            tryAdd(romForm, iastForm, origin, italic);
+            // Only the direct/paren-expansion rule carries the isDefault flag;
+            // generated variants are never themselves "default" entries.
+            tryAdd(romForm, iastForm, origin, italic, isDefault);
 
             const dropped = generateDroppedAVariant(iastForm, romForm);
             if (dropped) tryAdd(dropped[1], dropped[0], "dropped-a", italic);
 
-            for (const [vIast, vRom] of generateCompoundVariants(
-              iastForm,
-              romForm,
-            ))
+            for (const [vIast, vRom] of generateCompoundVariants(iastForm, romForm))
               tryAdd(vRom, vIast, "compound-variant", italic);
 
-            for (const [vIast, vRom] of generateVowelVariants(
-              iastForm,
-              romForm,
-            ))
+            for (const [vIast, vRom] of generateVowelVariants(iastForm, romForm))
               tryAdd(vRom, vIast, "vowel-variant", italic);
 
             // Register an italic-only rule for the IAST form itself so that text
@@ -1034,13 +1074,14 @@
             htmlResult += `<mark class="unknown">${escapeHtml(ev.word)}</mark>`;
             cursor = ev.end;
           } else {
-            const { end, newSpelling, wrapItalicLatex, wrapItalicHtml } = ev;
+            const { end, newSpelling, wrapItalicLatex, wrapItalicHtml, rule } = ev;
+            const cls = rule.hasAlternate ? ' class="alternate"' : "";
             if (latexMode && wrapItalicLatex) {
-              htmlResult += `<mark>${escapeHtml(`\\textit{${newSpelling}}`)}</mark>`;
+              htmlResult += `<mark${cls}>${escapeHtml(`\\textit{${newSpelling}}`)}</mark>`;
             } else if (!latexMode && wrapItalicHtml) {
-              htmlResult += `<mark><em>${escapeHtml(newSpelling)}</em></mark>`;
+              htmlResult += `<mark${cls}><em>${escapeHtml(newSpelling)}</em></mark>`;
             } else {
-              htmlResult += `<mark>${escapeHtml(newSpelling)}</mark>`;
+              htmlResult += `<mark${cls}>${escapeHtml(newSpelling)}</mark>`;
             }
             cursor = end;
           }
