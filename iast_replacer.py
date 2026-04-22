@@ -565,7 +565,7 @@ def match_case(original: str, replacement: str, sentence_start: bool) -> str:
 
 def should_italicize(iast_form: str) -> bool:
     """
-    Decide whether an IAST term should be wrapped in \\textit{}.
+    Decide whether an IAST term should be wrapped in \textit{}.
 
     Heuristic:
       - Lowercase start -> common noun / technical term -> italicize
@@ -592,10 +592,25 @@ def find_italic_content_spans(line: str) -> list[tuple[int, int]]:
     Find (start, end) positions of text *inside* \\textit{...} / \\emph{...}
     groups. A match at such a position should be spelling-corrected but
     NOT wrapped in another italic command.
+
+    Uses a balanced-brace scanner instead of a plain [^{}]* regex so that
+    content containing nested braces (e.g. \\textit{\\enquote{bhakti}}) is
+    detected correctly — preventing double-wrapping on repeated runs.
     """
     spans = []
-    for m in ITALIC_COMMAND_RE.finditer(line):
-        spans.append((m.start(1), m.end(1)))
+    for m in re.finditer(r'\\(?:textit|emph|textsl|textsf)\{', line):
+        content_start = m.end()   # index of first char inside the opening '{'
+        depth = 1
+        i = content_start
+        while i < len(line) and depth > 0:
+            if line[i] == '{':
+                depth += 1
+            elif line[i] == '}':
+                depth -= 1
+            i += 1
+        if depth == 0:            # found the matching closing '}'
+            content_end = i - 1   # index of the closing '}'
+            spans.append((content_start, content_end))
     return spans
 
 
@@ -620,6 +635,19 @@ def apply_replacements_to_line(line, replacements, latex_mode=False,
             inside_italic = is_inside_protected(
                 start, end - start, italic_spans
             )
+            # Belt-and-suspenders idempotency guard: even if find_italic_content_spans
+            # missed the span (e.g. due to an unusual nesting pattern), skip the wrap
+            # when the match is already the direct argument of an italic command —
+            # i.e. the text immediately before start is '\cmd{' and immediately
+            # after end is '}'. This prevents \textit{\textit{bhakti}} on re-runs.
+            if not inside_italic and latex_mode and should_italicize(rule.right):
+                pre  = line[:start]
+                post = line[end:]
+                for _ic in ('textit', 'emph', 'textsl', 'textsf'):
+                    if pre.endswith(f'\\{_ic}{{') and post.startswith('}'):
+                        inside_italic = True
+                        break
+
             wrap_italic = (
                 latex_mode
                 and not inside_italic
@@ -1357,7 +1385,7 @@ def main():
     parser.add_argument("--no-backup", action="store_true",
         help="Skip creating .bak files.")
     parser.add_argument("--latex", action="store_true",
-        help="Wrap italic-worthy terms in \\textit{} (or --italic-cmd). "
+        help="Wrap italic-worthy terms in \textit{} (or --italic-cmd). "
              "Lowercase terms and titles (Gītā, Purāṇa, etc.) are "
              "italicized; proper names stay roman.")
     parser.add_argument("--italic-cmd", choices=["textit", "emph"],
