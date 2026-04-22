@@ -934,32 +934,43 @@
             //   - Only in LaTeX/italic mode
             //   - Only when the term is italic-worthy (rule.italic)
             //   - Not when it is already inside an italic command
-            let insideItalic = isInsideItalicSpans(start, end, italicSpans);
-            // Belt-and-suspenders: even if the span scanner missed the case
-            // (unusual nesting), skip the wrap when the match is the direct
-            // argument — i.e. immediately preceded by \cmd{ and followed by }.
-            if (!insideItalic && latexMode && rule.italic) {
-              const pre = line.slice(0, start);
-              const post = line.slice(end);
-              if (
-                /\\(?:textit|emph|textsl|textsf)\{$/.test(pre) &&
-                post.startsWith("}")
-              ) {
-                insideItalic = true;
+            let insideLatexItalic = false;
+
+            // Only relevant in LaTeX mode, to avoid double-wrapping with \textit{}
+            if (latexMode && rule.italic) {
+              insideLatexItalic = isInsideItalicSpans(start, end, italicSpans);
+
+              // Belt-and-suspenders: even if the span scanner missed the case
+              // (unusual nesting), skip the wrap when the match is the direct
+              // argument — i.e. immediately preceded by \cmd{ and followed by }.
+              if (!insideLatexItalic) {
+                const pre = line.slice(0, start);
+                const post = line.slice(end);
+                if (
+                  /\\(?:textit|emph|textsl|textsf)\{$/.test(pre) &&
+                  post.startsWith("}")
+                ) {
+                  insideLatexItalic = true;
+                }
               }
             }
 
-            const wrapItalic = latexMode && rule.italic && !insideItalic;
+            const wrapItalicLatex =
+              latexMode && rule.italic && !insideLatexItalic;
+            const wrapItalicHtml = rule.italic;
 
-            // Skip if no spelling change AND we would not add/remove a wrap
-            if (matched === newSpelling && !wrapItalic) continue;
+            // Skip only if there is neither a spelling change nor any italic effect to show
+            if (matched === newSpelling && !wrapItalicLatex && !wrapItalicHtml)
+              continue;
+
             candidates.push({
               start,
               end,
               matched,
               newSpelling,
               rule,
-              wrapItalic,
+              wrapItalicLatex,
+              wrapItalicHtml,
             });
           }
         }
@@ -1012,11 +1023,11 @@
             htmlResult += `<mark class="unknown">${escapeHtml(ev.word)}</mark>`;
             cursor = ev.end;
           } else {
-            const { end, newSpelling, rule, wrapItalic } = ev;
-            if (wrapItalic) {
-              htmlResult += latexMode
-                ? `<mark>${escapeHtml(`\\textit{${newSpelling}}`)}</mark>`
-                : `<mark><em>${escapeHtml(newSpelling)}</em></mark>`;
+            const { end, newSpelling, wrapItalicLatex, wrapItalicHtml } = ev;
+            if (latexMode && wrapItalicLatex) {
+              htmlResult += `<mark>${escapeHtml(`\\textit{${newSpelling}}`)}</mark>`;
+            } else if (!latexMode && wrapItalicHtml) {
+              htmlResult += `<mark><em>${escapeHtml(newSpelling)}</em></mark>`;
             } else {
               htmlResult += `<mark>${escapeHtml(newSpelling)}</mark>`;
             }
@@ -1027,9 +1038,8 @@
 
         let plain = line;
         for (let i = kept.length - 1; i >= 0; i--) {
-          const { start, end, newSpelling, wrapItalic } = kept[i];
-          // wrapItalic is pre-computed per-candidate (accounts for idempotency).
-          const plainOut = wrapItalic
+          const { start, end, newSpelling, wrapItalicLatex } = kept[i];
+          const plainOut = wrapItalicLatex
             ? `\\textit{${newSpelling}}`
             : newSpelling;
           plain = plain.slice(0, start) + plainOut + plain.slice(end);
