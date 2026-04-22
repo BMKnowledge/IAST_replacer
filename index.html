@@ -954,7 +954,7 @@
             const { end, newSpelling, rule } = ev;
             if (rule.italic) {
               htmlResult += latexMode
-                ? `<mark>${escapeHtml(`\textit{${newSpelling}}`)}</mark>`
+                ? `<mark>${escapeHtml(`\\textit{${newSpelling}}`)}</mark>`
                 : `<mark><em>${escapeHtml(newSpelling)}</em></mark>`;
             } else {
               htmlResult += `<mark>${escapeHtml(newSpelling)}</mark>`;
@@ -970,7 +970,7 @@
           // LaTeX mode: italic terms get \textit{} in the plain output.
           // Default mode: italic is visual only, plain text is just the spelling.
           const plainOut =
-            latexMode && rule.italic ? `\textit{${newSpelling}}` : newSpelling;
+            latexMode && rule.italic ? `\\textit{${newSpelling}}` : newSpelling;
           plain = plain.slice(0, start) + plainOut + plain.slice(end);
         }
 
