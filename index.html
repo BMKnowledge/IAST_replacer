@@ -879,12 +879,43 @@
       // Apply replacements to a single line
       // ---------------------------------------------------------------------------
 
+      /**
+       * Return [contentStart, contentEnd] pairs for text inside
+       * \textit{…} / \emph{…} / \textsl{…} / \textsf{…}, using a
+       * balanced-brace scanner so nested braces are handled correctly.
+       * Mirrors Python find_italic_content_spans().
+       */
+      function findItalicContentSpans(line) {
+        const spans = [];
+        const re = /\\(?:textit|emph|textsl|textsf)\{/g;
+        let m;
+        while ((m = re.exec(line)) !== null) {
+          const contentStart = m.index + m[0].length;
+          let depth = 1, i = contentStart;
+          while (i < line.length && depth > 0) {
+            if (line[i] === '{') depth++;
+            else if (line[i] === '}') depth--;
+            i++;
+          }
+          if (depth === 0) spans.push([contentStart, i - 1]);
+        }
+        return spans;
+      }
+
+      function isInsideItalicSpans(start, end, spans) {
+        return spans.some(([s, e]) => start >= s && end <= e);
+      }
+
       function applyReplacementsToLine(
         line,
         replacements,
         latexMode,
         knownTerms,
       ) {
+        // Pre-compute which character ranges are already inside an italic command
+        // so we never double-wrap on repeated runs (idempotency).
+        const italicSpans = latexMode ? findItalicContentSpans(line) : [];
+
         const candidates = [];
 
         for (const rule of replacements) {
@@ -897,9 +928,31 @@
               rule.right,
               isAtSentenceStart(line, start, end),
             );
-            // Skip if no spelling change AND the rule doesn't carry italic info
-            if (matched === newSpelling && !rule.italic) continue;
-            candidates.push({ start, end, matched, newSpelling, rule });
+
+            // Determine whether to wrap in \textit{} / <em>:
+            //   - Only in LaTeX/italic mode
+            //   - Only when the term is italic-worthy (rule.italic)
+            //   - Not when it is already inside an italic command
+            let insideItalic = isInsideItalicSpans(start, end, italicSpans);
+            // Belt-and-suspenders: even if the span scanner missed the case
+            // (unusual nesting), skip the wrap when the match is the direct
+            // argument — i.e. immediately preceded by \cmd{ and followed by }.
+            if (!insideItalic && latexMode && rule.italic) {
+              const pre = line.slice(0, start);
+              const post = line.slice(end);
+              if (
+                /\\(?:textit|emph|textsl|textsf)\{$/.test(pre) &&
+                post.startsWith("}")
+              ) {
+                insideItalic = true;
+              }
+            }
+
+            const wrapItalic = latexMode && rule.italic && !insideItalic;
+
+            // Skip if no spelling change AND we would not add/remove a wrap
+            if (matched === newSpelling && !wrapItalic) continue;
+            candidates.push({ start, end, matched, newSpelling, rule, wrapItalic });
           }
         }
 
@@ -951,8 +1004,8 @@
             htmlResult += `<mark class="unknown">${escapeHtml(ev.word)}</mark>`;
             cursor = ev.end;
           } else {
-            const { end, newSpelling, rule } = ev;
-            if (rule.italic) {
+            const { end, newSpelling, rule, wrapItalic } = ev;
+            if (wrapItalic) {
               htmlResult += latexMode
                 ? `<mark>${escapeHtml(`\\textit{${newSpelling}}`)}</mark>`
                 : `<mark><em>${escapeHtml(newSpelling)}</em></mark>`;
@@ -966,11 +1019,9 @@
 
         let plain = line;
         for (let i = kept.length - 1; i >= 0; i--) {
-          const { start, end, newSpelling, rule } = kept[i];
-          // LaTeX mode: italic terms get \textit{} in the plain output.
-          // Default mode: italic is visual only, plain text is just the spelling.
-          const plainOut =
-            latexMode && rule.italic ? `\\textit{${newSpelling}}` : newSpelling;
+          const { start, end, newSpelling, wrapItalic } = kept[i];
+          // wrapItalic is pre-computed per-candidate (accounts for idempotency).
+          const plainOut = wrapItalic ? `\\textit{${newSpelling}}` : newSpelling;
           plain = plain.slice(0, start) + plainOut + plain.slice(end);
         }
 
