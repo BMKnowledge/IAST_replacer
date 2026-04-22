@@ -719,7 +719,7 @@ _EQ_PATTERNS = [
     # Smart double quotes
     re.compile(r"\u201c[^\u201c\n]+?\u201d"),
     # Smart single quotes
-    re.compile(r"\u2018[^\u2018\n]+?\u2019"),
+    re.compile(r"\u2018(?:[^\u2019\n]|(?<=\w)\u2019(?=\w))+?\u2019"),
     # Straight double quotes
     re.compile(r'"[^"\n]+?"'),
     # Straight single quotes (conservative — word-boundary anchored)

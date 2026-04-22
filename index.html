@@ -891,10 +891,11 @@
         let m;
         while ((m = re.exec(line)) !== null) {
           const contentStart = m.index + m[0].length;
-          let depth = 1, i = contentStart;
+          let depth = 1,
+            i = contentStart;
           while (i < line.length && depth > 0) {
-            if (line[i] === '{') depth++;
-            else if (line[i] === '}') depth--;
+            if (line[i] === "{") depth++;
+            else if (line[i] === "}") depth--;
             i++;
           }
           if (depth === 0) spans.push([contentStart, i - 1]);
@@ -952,7 +953,14 @@
 
             // Skip if no spelling change AND we would not add/remove a wrap
             if (matched === newSpelling && !wrapItalic) continue;
-            candidates.push({ start, end, matched, newSpelling, rule, wrapItalic });
+            candidates.push({
+              start,
+              end,
+              matched,
+              newSpelling,
+              rule,
+              wrapItalic,
+            });
           }
         }
 
@@ -1021,7 +1029,9 @@
         for (let i = kept.length - 1; i >= 0; i--) {
           const { start, end, newSpelling, wrapItalic } = kept[i];
           // wrapItalic is pre-computed per-candidate (accounts for idempotency).
-          const plainOut = wrapItalic ? `\\textit{${newSpelling}}` : newSpelling;
+          const plainOut = wrapItalic
+            ? `\\textit{${newSpelling}}`
+            : newSpelling;
           plain = plain.slice(0, start) + plainOut + plain.slice(end);
         }
 
@@ -1052,10 +1062,18 @@
         { re: /\u201e[^\u201d\n]+?\u201d/g, lLen: 1, rLen: 1 }, // „..."
         { re: /»[^»«\n]+?«/g, lLen: 1, rLen: 1 }, // »...«
         { re: /«[^»«\n]+?»/g, lLen: 1, rLen: 1 }, // «...»
-        { re: /\u201c[^\u201c\n]+?\u201d/g, lLen: 1, rLen: 1 }, // "..."
-        { re: /\u2018[^\u2018\n]+?\u2019/g, lLen: 1, rLen: 1 }, // '...'
+        { re: /\u201c[^\u201c\n]+?\u201d/g, lLen: 1, rLen: 1 }, // “...”
+        {
+          re: /\u2018(?:[^\u2019\n]|(?<=\w)\u2019(?=\w))+?\u2019/g,
+          lLen: 1,
+          rLen: 1,
+        }, // ‘...’ allowing apostrophes inside words
         { re: /"[^"\n]+?"/g, lLen: 1, rLen: 1 }, // "..."
-        { re: /(?<![\w\\])'(?:[^'\n]|(?<=\w)'(?=\w))+?'(?!\w)/g, lLen: 1, rLen: 1 }, // '...' conservative (allows contraction apostrophes)
+        {
+          re: /(?<![\w\\])'(?:[^'\n]|(?<=\w)'(?=\w))+?'(?!\w)/g,
+          lLen: 1,
+          rLen: 1,
+        }, // '...' conservative
       ];
 
       function _eqFindTexCommentIndex(line) {
