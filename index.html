@@ -1059,16 +1059,15 @@
       const _EQ_PATTERNS = [
         { re: /``([^`\n]|`(?!`))*?''/g, lLen: 2, rLen: 2 }, // ``...''
         { re: /(?<!`)`([^'\n]|'(?!'))*?'/g, lLen: 1, rLen: 1 }, // `...'
-        { re: /\u201e[^\u201d\n]+?\u201d/g, lLen: 1, rLen: 1 }, // „..."
+        { re: /\u201e[^\u201d\n]+?\u201d/g, lLen: 1, rLen: 1 }, // „...“
         { re: /»[^»«\n]+?«/g, lLen: 1, rLen: 1 }, // »...«
         { re: /«[^»«\n]+?»/g, lLen: 1, rLen: 1 }, // «...»
-        { re: /\u201c[^\u201c\n]+?\u201d/g, lLen: 1, rLen: 1 }, // “...”
+        { re: /\u201c[^\u201d\n]+?\u201d/g, lLen: 1, rLen: 1 }, // “...”
         {
           re: /\u2018(?:[^\u2019\n]|(?<=\w)\u2019(?=\w))+\u2019/g,
           lLen: 1,
           rLen: 1,
         }, // ‘...’ allowing apostrophes inside words
-        ,
         { re: /"[^"\n]+?"/g, lLen: 1, rLen: 1 }, // "..."
         {
           re: /(?<![\w\\])'(?:[^'\n]|(?<=\w)'(?=\w))+?'(?!\w)/g,
@@ -1172,7 +1171,9 @@
         let newCode = tokPlain;
         let count = 0;
 
-        for (const { re, lLen, rLen } of _EQ_PATTERNS) {
+        for (const pattern of _EQ_PATTERNS) {
+          if (!pattern) continue;
+          const { re, lLen, rLen } = pattern;
           re.lastIndex = 0;
           newCode = newCode.replace(re, (match) => {
             count++;
@@ -1194,7 +1195,9 @@
         const { tokenized: tokHtml, registry: regHtml } =
           _eqProtectRegions(htmlCode);
         let newHtmlCode = tokHtml;
-        for (const { re, lLen, rLen } of _EQ_PATTERNS) {
+        for (const pattern of _EQ_PATTERNS) {
+          if (!pattern) continue;
+          const { re, lLen, rLen } = pattern;
           re.lastIndex = 0;
           newHtmlCode = newHtmlCode.replace(re, (match) => {
             const inner = match.slice(lLen, match.length - rLen);
