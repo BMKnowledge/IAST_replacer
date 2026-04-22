@@ -842,7 +842,10 @@
       const SENTENCE_END_RE = /[.!?]["'"')\]]*\s+$/;
 
       function isAtSentenceStart(line, pos, end) {
-        const before = line.slice(0, pos);
+        let before = line.slice(0, pos);
+        // Strip a trailing LaTeX font command + opening brace so that
+        // ". \textit{Bhakti}" is still recognised as post-sentence-end.
+        before = before.replace(/\\(?:textit|emph|textsl|textsf|textbf|texttt)\{$/, "");
         if (before.trim() === "") {
           // Standalone term (nothing non-whitespace after the match) → use the
           // guide's canonical casing rather than forcing a sentence-initial capital.
