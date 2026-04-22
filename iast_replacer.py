@@ -723,7 +723,8 @@ _EQ_PATTERNS = [
     # Straight double quotes
     re.compile(r'"[^"\n]+?"'),
     # Straight single quotes (conservative — word-boundary anchored)
-    re.compile(r"(?<![\w\\])'[^'\n]+?'(?!\w)"),
+    # Allow contraction apostrophes (e.g. don't) inside the quoted span.
+    re.compile(r"(?<![\w\\])'(?:[^'\n]|(?<=\w)'(?=\w))+?'(?!\w)"),
 ]
 
 _EQ_VERB_INLINE = re.compile(r"\\verb\*?(.)(.*?)\1")

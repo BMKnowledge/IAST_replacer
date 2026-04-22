@@ -1055,7 +1055,7 @@
         { re: /\u201c[^\u201c\n]+?\u201d/g, lLen: 1, rLen: 1 }, // "..."
         { re: /\u2018[^\u2018\n]+?\u2019/g, lLen: 1, rLen: 1 }, // '...'
         { re: /"[^"\n]+?"/g, lLen: 1, rLen: 1 }, // "..."
-        { re: /(?<![\w\\])'[^'\n]+?'(?!\w)/g, lLen: 1, rLen: 1 }, // '...' conservative
+        { re: /(?<![\w\\])'(?:[^'\n]|(?<=\w)'(?=\w))+?'(?!\w)/g, lLen: 1, rLen: 1 }, // '...' conservative (allows contraction apostrophes)
       ];
 
       function _eqFindTexCommentIndex(line) {
