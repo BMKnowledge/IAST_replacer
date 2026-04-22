@@ -565,6 +565,10 @@
         ["Ū", ["U", "Oo"]],
         ["ś", ["sh", "s"]],
         ["Ś", ["Sh", "S"]],
+        // IAST 'c' (palatal stop) is romanised 'ch' in English phonetics,
+        // but some systems write it as plain 'c' (e.g. acarya / acharya).
+        ["c", ["ch", "c"]],
+        ["C", ["Ch", "C"]],
       ]);
 
       // Chars with a single canonical romanisation.
@@ -596,8 +600,7 @@
         ["Ḻ", "L"],
         ["ṅ", "n"],
         ["Ṅ", "N"],
-        ["c", "ch"],
-        ["C", "Ch"],
+        // Note: 'c'/'C' moved to _VOWEL_VARIANT_CHOICES (has two options: ch, c).
       ]);
 
       const _VOWEL_VARIANT_MAX_COMBOS = 32;
@@ -688,6 +691,11 @@
           romSuffix = "";
         for (const m of iast.matchAll(/\(([^)]*)\)/g)) iastSuffix += m[1];
         for (const m of rom.matchAll(/\(([^)]*)\)/g)) romSuffix += m[1];
+
+        // If only one column carries a suffix, mirror it to the other so that
+        // e.g. "ācārya(s)" / "acharya(s)" works even when only one side has (s).
+        if (iastSuffix && !romSuffix) romSuffix = iastSuffix;
+        if (romSuffix && !iastSuffix) iastSuffix = romSuffix;
 
         const iastFull = iastStem + iastSuffix;
         const romFull = romStem + romSuffix;

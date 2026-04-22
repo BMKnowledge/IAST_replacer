@@ -167,6 +167,13 @@ def expand_parentheses(iast: str, rom: str) -> list[tuple[str, str]]:
     iast_suffix = "".join(PAREN_RE.findall(iast))
     rom_suffix = "".join(PAREN_RE.findall(rom))
 
+    # If only one column carries a suffix, mirror it to the other so that
+    # e.g. "ācārya(s)" / "acharya(s)" works even when only one side has (s).
+    if iast_suffix and not rom_suffix:
+        rom_suffix = iast_suffix
+    elif rom_suffix and not iast_suffix:
+        iast_suffix = rom_suffix
+
     iast_full = iast_stem + iast_suffix
     rom_full = rom_stem + rom_suffix
 
@@ -303,6 +310,9 @@ _VOWEL_VARIANT_CHOICES = {
     "ī": ("i", "ee"),   "Ī": ("I", "Ee"),
     "ū": ("u", "oo"),   "Ū": ("U", "Oo"),
     "ś": ("sh", "s"),   "Ś": ("Sh", "S"),
+    # IAST 'c' (palatal stop) → "ch" in English phonetics, but also written
+    # as plain "c" in some systems (e.g. "acarya" vs "acharya").
+    "c": ("ch", "c"),   "C": ("Ch", "C"),
 }
 
 # IAST chars that always map to the same romanisation (no variants).
@@ -318,7 +328,7 @@ _STANDARD_IAST_MAP = {
     "ḍ": "d",   "Ḍ": "D",
     "ṇ": "n",   "Ṇ": "N",
     "ḻ": "l",   "Ḻ": "L",    "ṅ": "n",   "Ṅ": "N",
-    "c": "ch",  "C": "Ch",
+    # Note: "c"/"C" moved to _VOWEL_VARIANT_CHOICES (two options: ch, c).
 }
 
 # Cap combinations for pathological inputs — 2^n grows quickly
@@ -719,7 +729,7 @@ _EQ_PATTERNS = [
     # Smart double quotes
     re.compile(r"\u201c[^\u201c\n]+?\u201d"),
     # Smart single quotes
-    re.compile(r"\u2018(?:[^\u2019\n]|(?<=\w)\u2019(?=\w))+\u2019"),,
+    re.compile(r"\u2018(?:[^\u2019\n]|(?<=\w)\u2019(?=\w))+\u2019"),
     # Straight double quotes
     re.compile(r'"[^"\n]+?"'),
     # Straight single quotes (conservative — word-boundary anchored)
