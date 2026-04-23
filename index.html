@@ -6,6 +6,80 @@
     <title>IAST Replacer</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
     <style>
+      /* ── Design tokens ─────────────────────────────────────────────────────── */
+      :root {
+        --c-bg:              #f5f3ee;
+        --c-surface:         #fff;
+        --c-surface-alt:     #fafaf8;
+        --c-border:          #ddd;
+        --c-border-subtle:   #e8e4dc;
+        --c-border-input:    #d0ccc4;
+        --c-text:            #2c2c2c;
+        --c-text-sub:        #666;
+        --c-text-muted:      #888;
+        --c-text-faint:      #aaa;
+        --c-text-input:      #1a1a1a;
+        --c-text-readonly:   #333;
+        --c-placeholder:     #bbb;
+        --c-focus:           #8b7355;
+        --c-accent:          #2c5282;
+        --c-mark-bg:         #d4edda;
+        --c-mark-fg:         #1a4731;
+        --c-mark-alt-bg:     #fde8c8;
+        --c-mark-alt-fg:     #7a4000;
+        --c-mark-alt-border: #c47a00;
+        --c-mark-unk-bg:     #fff0c2;
+        --c-mark-unk-fg:     #7a5800;
+        --c-chip-border:     #e8d87a;
+        --c-btn-border:      #ccc;
+        --c-btn-text:        #555;
+        --c-btn-hover:       #333;
+        --c-toggle-track:    #ccc;
+        --c-toggle-label:    #555;
+        --c-status-ready:    #4a7c59;
+        --c-status-error:    #b94a4a;
+        --c-status-changed:  #2c5282;
+        --c-spinner-ring:    #ccc;
+        --c-spinner-head:    #888;
+      }
+
+      body.dark {
+        --c-bg:              #161614;
+        --c-surface:         #222220;
+        --c-surface-alt:     #1c1c1a;
+        --c-border:          #363634;
+        --c-border-subtle:   #2c2c2a;
+        --c-border-input:    #3a3835;
+        --c-text:            #ddd9d0;
+        --c-text-sub:        #8a8a88;
+        --c-text-muted:      #666662;
+        --c-text-faint:      #555552;
+        --c-text-input:      #ccc8c0;
+        --c-text-readonly:   #a8a49c;
+        --c-placeholder:     #525250;
+        --c-focus:           #a08060;
+        --c-accent:          #7098c8;
+        --c-mark-bg:         #183525;
+        --c-mark-fg:         #5dbf85;
+        --c-mark-alt-bg:     #38200e;
+        --c-mark-alt-fg:     #d4904c;
+        --c-mark-alt-border: #a86820;
+        --c-mark-unk-bg:     #30290a;
+        --c-mark-unk-fg:     #c8a832;
+        --c-chip-border:     #685a18;
+        --c-btn-border:      #444440;
+        --c-btn-text:        #a0a09c;
+        --c-btn-hover:       #ddddd8;
+        --c-toggle-track:    #44443e;
+        --c-toggle-label:    #a0a09c;
+        --c-status-ready:    #5a9c6a;
+        --c-status-error:    #c86464;
+        --c-status-changed:  #6a92c4;
+        --c-spinner-ring:    #444440;
+        --c-spinner-head:    #888884;
+      }
+
+      /* ── Reset ─────────────────────────────────────────────────────────────── */
       *,
       *::before,
       *::after {
@@ -14,22 +88,24 @@
         padding: 0;
       }
 
+      /* ── Layout ────────────────────────────────────────────────────────────── */
       body {
         font-family:
           -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-        background: #f5f3ee;
-        color: #2c2c2c;
+        background: var(--c-bg);
+        color: var(--c-text);
         min-height: 100vh;
         display: flex;
         flex-direction: column;
+        transition: background 0.2s, color 0.2s;
       }
 
       header {
-        background: #fff;
-        border-bottom: 1px solid #ddd;
+        background: var(--c-surface);
+        border-bottom: 1px solid var(--c-border);
         padding: 18px 32px;
         display: flex;
-        align-items: baseline;
+        align-items: center;
         gap: 12px;
       }
 
@@ -41,49 +117,70 @@
 
       header p {
         font-size: 0.875rem;
-        color: #666;
+        color: var(--c-text-sub);
       }
 
+      /* Dark-mode toggle button in header */
+      #theme-toggle {
+        margin-left: auto;
+        background: none;
+        border: 1px solid var(--c-border);
+        border-radius: 8px;
+        padding: 6px 8px;
+        cursor: pointer;
+        color: var(--c-text-muted);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transition: border-color 0.15s, color 0.15s, background 0.15s;
+        flex-shrink: 0;
+      }
+      #theme-toggle:hover {
+        border-color: var(--c-focus);
+        color: var(--c-text);
+        background: var(--c-surface-alt);
+      }
+      #theme-toggle svg {
+        width: 16px;
+        height: 16px;
+        display: block;
+      }
+      /* Show moon in light mode, sun in dark mode */
+      #theme-toggle .icon-sun  { display: none; }
+      #theme-toggle .icon-moon { display: block; }
+      body.dark #theme-toggle .icon-sun  { display: block; }
+      body.dark #theme-toggle .icon-moon { display: none; }
+
       #status-bar {
-        background: #fafaf8;
-        border-bottom: 1px solid #e8e4dc;
+        background: var(--c-surface-alt);
+        border-bottom: 1px solid var(--c-border-subtle);
         padding: 8px 32px;
         font-size: 0.8125rem;
-        color: #666;
+        color: var(--c-text-sub);
         min-height: 33px;
         display: flex;
         align-items: center;
         gap: 8px;
       }
 
-      #status-bar.loading {
-        color: #888;
-      }
-      #status-bar.ready {
-        color: #4a7c59;
-      }
-      #status-bar.error {
-        color: #b94a4a;
-      }
-      #status-bar.changed {
-        color: #2c5282;
-      }
+      #status-bar.loading { color: var(--c-text-muted); }
+      #status-bar.ready   { color: var(--c-status-ready); }
+      #status-bar.error   { color: var(--c-status-error); }
+      #status-bar.changed { color: var(--c-status-changed); }
 
       .spinner {
         display: inline-block;
         width: 11px;
         height: 11px;
-        border: 2px solid #ccc;
-        border-top-color: #888;
+        border: 2px solid var(--c-spinner-ring);
+        border-top-color: var(--c-spinner-head);
         border-radius: 50%;
         animation: spin 0.7s linear infinite;
         flex-shrink: 0;
       }
 
       @keyframes spin {
-        to {
-          transform: rotate(360deg);
-        }
+        to { transform: rotate(360deg); }
       }
 
       main {
@@ -106,36 +203,28 @@
         font-weight: 600;
         text-transform: uppercase;
         letter-spacing: 0.07em;
-        color: #888;
+        color: var(--c-text-muted);
       }
 
       textarea {
         width: 100%;
         height: 480px;
         padding: 14px 16px;
-        border: 1px solid #d0ccc4;
+        border: 1px solid var(--c-border-input);
         border-radius: 6px;
-        background: #fff;
+        background: var(--c-surface);
         font-family: "Georgia", "Times New Roman", serif;
         font-size: 0.9375rem;
         line-height: 1.7;
-        color: #1a1a1a;
+        color: var(--c-text-input);
         resize: vertical;
         outline: none;
-        transition: border-color 0.15s;
+        transition: border-color 0.15s, background 0.2s, color 0.2s;
       }
 
-      textarea:focus {
-        border-color: #8b7355;
-      }
-      textarea[readonly] {
-        background: #fafaf8;
-        color: #333;
-        cursor: default;
-      }
-      textarea::placeholder {
-        color: #bbb;
-      }
+      textarea:focus       { border-color: var(--c-focus); }
+      textarea[readonly]   { background: var(--c-surface-alt); color: var(--c-text-readonly); cursor: default; }
+      textarea::placeholder { color: var(--c-placeholder); }
 
       .controls {
         display: flex;
@@ -143,7 +232,7 @@
         align-items: center;
         justify-content: center;
         padding: 0 20px;
-        padding-top: 24px; /* offset for label height */
+        padding-top: 24px;
       }
 
       button#convert-btn {
@@ -159,95 +248,76 @@
         align-items: center;
         gap: 8px;
         white-space: nowrap;
-        transition:
-          background 0.15s,
-          opacity 0.15s;
+        transition: background 0.15s, opacity 0.15s;
       }
-
-      button#convert-btn:hover {
-        background: #4a6944;
-      }
-      button#convert-btn:disabled {
-        opacity: 0.45;
-        cursor: not-allowed;
-      }
+      button#convert-btn:hover    { background: #4a6944; }
+      button#convert-btn:disabled { opacity: 0.45; cursor: not-allowed; }
 
       button#copy-btn {
         background: none;
-        border: 1px solid #ccc;
+        border: 1px solid var(--c-btn-border);
         border-radius: 6px;
         padding: 8px 14px;
         font-size: 0.8125rem;
-        color: #555;
+        color: var(--c-btn-text);
         cursor: pointer;
-        transition:
-          border-color 0.15s,
-          color 0.15s;
+        transition: border-color 0.15s, color 0.15s;
         margin-top: 10px;
       }
-
-      button#copy-btn:hover {
-        border-color: #8b7355;
-        color: #333;
-      }
-      button#copy-btn:disabled {
-        opacity: 0.4;
-        cursor: not-allowed;
-      }
+      button#copy-btn:hover    { border-color: var(--c-focus); color: var(--c-btn-hover); }
+      button#copy-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
       .arrow {
         font-size: 1.1rem;
-        color: #aaa;
+        color: var(--c-text-faint);
         margin-top: 14px;
       }
 
       .output-meta {
         font-size: 0.8rem;
-        color: #888;
+        color: var(--c-text-muted);
         min-height: 1.2em;
       }
-
-      .output-meta span {
-        color: #2c5282;
-        font-weight: 500;
-      }
+      .output-meta span       { color: var(--c-accent); font-weight: 500; }
+      .output-meta .mode-note { color: var(--c-text-muted); font-weight: 400; }
 
       #output-highlight {
         width: 100%;
         min-height: 480px;
         max-height: 480px;
         padding: 14px 16px;
-        border: 1px solid #d0ccc4;
+        border: 1px solid var(--c-border-input);
         border-radius: 6px;
-        background: #fafaf8;
+        background: var(--c-surface-alt);
         font-family: "Georgia", "Times New Roman", serif;
         font-size: 0.9375rem;
         line-height: 1.7;
-        color: #1a1a1a;
+        color: var(--c-text-input);
         overflow-y: auto;
         white-space: pre-wrap;
         word-wrap: break-word;
+        transition: background 0.2s, color 0.2s, border-color 0.2s;
       }
 
       #output-highlight mark {
-        background: #d4edda;
-        color: #1a4731;
+        background: var(--c-mark-bg);
+        color: var(--c-mark-fg);
         border-radius: 2px;
         padding: 0 1px;
       }
 
       /* Term replaced with the "default" form when an alternate exists in the guide */
       #output-highlight mark.alternate {
-        background: #fde8c8;
-        color: #7a4000;
+        background: var(--c-mark-alt-bg);
+        color: var(--c-mark-alt-fg);
         border-radius: 2px;
         padding: 0 1px;
-        border-bottom: 1px dashed #c47a00;
+        border-bottom: 1px dashed var(--c-mark-alt-border);
       }
 
       #output-highlight mark.unknown {
-        background: #fff0c2;
-        color: #7a5800;
+        background: var(--c-mark-unk-bg);
+        color: var(--c-mark-unk-fg);
         border-radius: 2px;
         padding: 0 1px;
       }
@@ -263,7 +333,7 @@
         font-weight: 600;
         text-transform: uppercase;
         letter-spacing: 0.07em;
-        color: #888;
+        color: var(--c-text-muted);
         margin-bottom: 6px;
       }
 
@@ -274,9 +344,9 @@
       }
 
       .chip {
-        background: #fff0c2;
-        color: #7a5800;
-        border: 1px solid #e8d87a;
+        background: var(--c-mark-unk-bg);
+        color: var(--c-mark-unk-fg);
+        border: 1px solid var(--c-chip-border);
         border-radius: 12px;
         padding: 2px 10px;
         font-size: 0.8125rem;
@@ -288,38 +358,29 @@
         font-size: 0.875rem;
       }
 
-      .output-meta .mode-note {
-        color: #888;
-        font-weight: 400;
-      }
-
-      /* Toggle switch */
+      /* ── LaTeX mode toggle switch ───────────────────────────────────────────── */
       .toggle-label {
         display: flex;
         align-items: center;
         gap: 8px;
         cursor: pointer;
         font-size: 0.8125rem;
-        color: #555;
+        color: var(--c-toggle-label);
         user-select: none;
         margin-top: 14px;
         white-space: nowrap;
       }
-
-      .toggle-label input[type="checkbox"] {
-        display: none;
-      }
+      .toggle-label input[type="checkbox"] { display: none; }
 
       .toggle-track {
         width: 34px;
         height: 20px;
-        background: #ccc;
+        background: var(--c-toggle-track);
         border-radius: 10px;
         position: relative;
         transition: background 0.2s;
         flex-shrink: 0;
       }
-
       .toggle-thumb {
         position: absolute;
         width: 14px;
@@ -331,22 +392,20 @@
         transition: left 0.2s;
         box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
       }
+      .toggle-label input:checked ~ .toggle-track              { background: #5a7a52; }
+      .toggle-label input:checked ~ .toggle-track .toggle-thumb { left: 17px; }
 
-      .toggle-label input:checked ~ .toggle-track {
-        background: #5a7a52;
-      }
-      .toggle-label input:checked ~ .toggle-track .toggle-thumb {
-        left: 17px;
-      }
-
+      /* ── Footer ────────────────────────────────────────────────────────────── */
       footer {
         text-align: center;
         padding: 16px;
         font-size: 0.75rem;
-        color: #aaa;
-        border-top: 1px solid #e8e4dc;
+        color: var(--c-text-faint);
+        border-top: 1px solid var(--c-border-subtle);
       }
+      footer a { color: var(--c-text-faint); }
 
+      /* ── Responsive ────────────────────────────────────────────────────────── */
       @media (max-width: 800px) {
         main {
           grid-template-columns: 1fr;
@@ -358,17 +417,13 @@
           justify-content: flex-start;
           gap: 10px;
         }
-        .controls .arrow {
-          display: none;
-        }
+        .controls .arrow { display: none; }
         header {
           padding: 14px 16px;
-          flex-direction: column;
+          flex-wrap: wrap;
           gap: 4px;
         }
-        #status-bar {
-          padding: 8px 16px;
-        }
+        #status-bar { padding: 8px 16px; }
       }
     </style>
   </head>
@@ -376,6 +431,24 @@
     <header>
       <h1>IAST Replacer</h1>
       <p>Converts Sanskrit terms to standard IAST transliteration</p>
+      <button id="theme-toggle" aria-label="Toggle dark mode" title="Toggle dark mode">
+        <!-- Moon: shown in light mode (click to go dark) -->
+        <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+        </svg>
+        <!-- Sun: shown in dark mode (click to go light) -->
+        <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="5"/>
+          <line x1="12" y1="1"  x2="12" y2="3"/>
+          <line x1="12" y1="21" x2="12" y2="23"/>
+          <line x1="4.22" y1="4.22"  x2="5.64" y2="5.64"/>
+          <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/>
+          <line x1="1"  y1="12" x2="3"  y2="12"/>
+          <line x1="21" y1="12" x2="23" y2="12"/>
+          <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/>
+          <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+        </svg>
+      </button>
     </header>
 
     <div id="status-bar" class="loading">
@@ -1494,6 +1567,30 @@
       // Also allow Ctrl/Cmd+Enter to convert
       inputEl.addEventListener("keydown", (e) => {
         if ((e.ctrlKey || e.metaKey) && e.key === "Enter") convertBtn.click();
+      });
+
+      // ── Dark mode toggle ─────────────────────────────────────────────────────
+      const themeToggle = document.getElementById("theme-toggle");
+
+      function applyTheme(dark) {
+        document.body.classList.toggle("dark", dark);
+        localStorage.setItem("iast-theme", dark ? "dark" : "light");
+        themeToggle.setAttribute(
+          "aria-label",
+          dark ? "Switch to light mode" : "Switch to dark mode",
+        );
+      }
+
+      // Initialise: respect saved preference, then system preference
+      const savedTheme = localStorage.getItem("iast-theme");
+      if (savedTheme) {
+        applyTheme(savedTheme === "dark");
+      } else {
+        applyTheme(window.matchMedia("(prefers-color-scheme: dark)").matches);
+      }
+
+      themeToggle.addEventListener("click", () => {
+        applyTheme(!document.body.classList.contains("dark"));
       });
 
       loadGuide();
