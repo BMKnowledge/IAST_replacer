@@ -1118,12 +1118,17 @@
             htmlResult += `<mark class="unknown">${escapeHtml(ev.word)}</mark>`;
             cursor = ev.end;
           } else {
-            const { end, newSpelling, wrapItalicLatex, wrapItalicHtml, rule } = ev;
+            const { end, matched, newSpelling, wrapItalicLatex, wrapItalicHtml, rule } = ev;
             if (rule.protect) {
-              // Protect placeholder: emit the original text verbatim — no highlight,
-              // no spelling change, no LaTeX wrapping.  Its only job was to win the
-              // overlap-resolution race so shorter sub-phrase rules couldn't fire.
-              htmlResult += escapeHtml(line.slice(ev.start, ev.end));
+              // Protect placeholder: no italic wrapping, no hasAlternate highlight.
+              // If the canonical casing differs from the input (e.g. "atma kriya yoga"
+              // → "Atma Kriya Yoga"), apply that casing correction with a plain mark.
+              // If the text is already correct, emit it verbatim with no mark at all.
+              if (matched === newSpelling) {
+                htmlResult += escapeHtml(line.slice(ev.start, ev.end));
+              } else {
+                htmlResult += `<mark>${escapeHtml(newSpelling)}</mark>`;
+              }
             } else {
               const cls = rule.hasAlternate ? ' class="alternate"' : "";
               if (latexMode && wrapItalicLatex) {
@@ -1141,8 +1146,14 @@
 
         let plain = line;
         for (let i = kept.length - 1; i >= 0; i--) {
-          const { start, end, newSpelling, wrapItalicLatex, rule } = kept[i];
-          if (rule.protect) continue; // passthrough — leave original text intact
+          const { start, end, matched, newSpelling, wrapItalicLatex, rule } = kept[i];
+          if (rule.protect) {
+            // Apply casing correction if the canonical form differs from input.
+            // Never add \textit{} wrapping for protect entries.
+            if (matched !== newSpelling)
+              plain = plain.slice(0, start) + newSpelling + plain.slice(end);
+            continue;
+          }
           const plainOut = wrapItalicLatex
             ? `\\textit{${newSpelling}}`
             : newSpelling;
@@ -1152,7 +1163,8 @@
         return {
           plain,
           html: htmlResult,
-          count: kept.filter((k) => !k.rule.protect).length,
+          // Count actual changes: non-protect rules + protect rules that corrected casing
+          count: kept.filter((k) => !k.rule.protect || k.matched !== k.newSpelling).length,
           unknowns: unknowns.map((u) => u.word),
         };
       }
