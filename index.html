@@ -695,7 +695,13 @@
           [""],
         );
 
-        return combos.filter((v) => v !== rom).map((v) => [iast, v]);
+        // Exclude the canonical romanised form (already handled by the direct rule)
+        // and exclude the IAST form itself (v === iast produces a wrong===right pair
+        // that is identical to the explicit italic-only call at the end of the loop;
+        // keeping both causes a null-block race that prevents italic-only from firing).
+        return combos
+          .filter((v) => v !== rom && v !== iast)
+          .map((v) => [iast, v]);
       }
 
       function expandParentheses(iast, rom) {
@@ -779,12 +785,21 @@
           const key = wrong.toLowerCase();
 
           let hasAlternate = false;
+          let evictedItalic = false; // italic flag of any rule we remove
           if (seenWrong.has(key)) {
             const existing = seenWrong.get(key);
-            // A default rule may evict a previously-registered non-default one.
-            if (isDefault && existing && !existing.isDefault) {
-              const idx = replacements.indexOf(existing);
-              if (idx !== -1) replacements.splice(idx, 1);
+            // A default rule may evict a previously-registered non-default rule OR
+            // a null sentinel (null = "key claimed, no rule needed" by a non-italic
+            // wrong===right entry). Both must be overridable by a default row.
+            const canEvict =
+              isDefault &&
+              (existing === null || (existing && !existing.isDefault));
+            if (canEvict) {
+              if (existing !== null) {
+                const idx = replacements.indexOf(existing);
+                if (idx !== -1) replacements.splice(idx, 1);
+                evictedItalic = existing.italic ?? false;
+              }
               hasAlternate = true; // won over a competing entry
             } else {
               return; // keep the existing registration
@@ -801,7 +816,13 @@
             // from sneaking in a conflicting rule (e.g. "brahman" ← dropped-a of
             // "brahmana → brāhmaṇa"). If the term is italic, emit an italic-only
             // rule so it gets wrapped in <em>/\textit{} even with no spelling change.
-            if (italic) {
+            //
+            // If this call evicted a previous italic rule (evictedItalic), inherit
+            // that italic flag even when the current row's cell isn't styled italic —
+            // the default row overrides the non-default, but the italic wrapping
+            // intent should be preserved.
+            const effectiveItalic = italic || evictedItalic;
+            if (effectiveItalic) {
               const rule = {
                 wrong, right,
                 origin: "italic-only",
