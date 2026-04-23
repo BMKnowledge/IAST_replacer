@@ -842,24 +842,25 @@
           const pairs = expandParentheses(iast, rom);
           for (const [iastForm, romForm] of pairs) {
             const origin = pairs.length === 1 ? "direct" : "paren-expansion";
-            // Only the direct/paren-expansion rule carries the isDefault flag;
-            // generated variants are never themselves "default" entries.
+            // All rules from a default row carry isDefault so they can evict any
+            // previously-registered non-default rules for the same romanized key —
+            // including variants that a non-default row registered earlier.
             tryAdd(romForm, iastForm, origin, italic, isDefault);
 
             const dropped = generateDroppedAVariant(iastForm, romForm);
-            if (dropped) tryAdd(dropped[1], dropped[0], "dropped-a", italic);
+            if (dropped) tryAdd(dropped[1], dropped[0], "dropped-a", italic, isDefault);
 
             for (const [vIast, vRom] of generateCompoundVariants(iastForm, romForm))
-              tryAdd(vRom, vIast, "compound-variant", italic);
+              tryAdd(vRom, vIast, "compound-variant", italic, isDefault);
 
             for (const [vIast, vRom] of generateVowelVariants(iastForm, romForm))
-              tryAdd(vRom, vIast, "vowel-variant", italic);
+              tryAdd(vRom, vIast, "vowel-variant", italic, isDefault);
 
             // Register an italic-only rule for the IAST form itself so that text
             // already containing correct IAST characters (e.g. "ṛṣis") is still
             // wrapped in <em>/\textit{} — the rom-form rule won't match it.
             if (iastForm !== romForm)
-              tryAdd(iastForm, iastForm, "italic-only", italic);
+              tryAdd(iastForm, iastForm, "italic-only", italic, isDefault);
           }
         }
 
