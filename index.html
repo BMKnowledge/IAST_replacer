@@ -322,6 +322,31 @@
         padding: 0 1px;
       }
 
+      #changed-terms {
+        display: none;
+        margin-top: 10px;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+
+      .changed-chip {
+        background: var(--c-mark-bg);
+        color: var(--c-mark-fg);
+        border-radius: 10px;
+        padding: 2px 9px;
+        font-size: 0.8125rem;
+        font-family: "Georgia", "Times New Roman", serif;
+        white-space: nowrap;
+      }
+
+      /* "from → to" arrow inside chip */
+      .changed-chip .ch-arrow {
+        opacity: 0.55;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        font-size: 0.7em;
+        margin: 0 3px;
+      }
+
       #unknown-terms {
         margin-top: 14px;
         font-size: 0.8125rem;
@@ -480,6 +505,7 @@
         <label>Output</label>
         <div id="output-highlight"></div>
         <div class="output-meta" id="output-meta"></div>
+        <div id="changed-terms"></div>
         <div id="unknown-terms">
           <div class="unknown-label">Possible Sanskrit terms not in guide</div>
           <div class="unknown-chips" id="unknown-chips"></div>
@@ -1233,12 +1259,20 @@
           plain = plain.slice(0, start) + plainOut + plain.slice(end);
         }
 
+        // Collect {from, to} pairs for every kept change that altered the text.
+        // Protect rules with a casing correction are included; italic-only rules
+        // (where matched === newSpelling) are excluded — no visible spelling diff.
+        const changedWords = kept
+          .filter((k) => k.matched.toLowerCase() !== k.newSpelling.toLowerCase())
+          .map((k) => ({ from: k.matched, to: k.newSpelling }));
+
         return {
           plain,
           html: htmlResult,
           // Count actual changes: non-protect rules + protect rules that corrected casing
           count: kept.filter((k) => !k.rule.protect || k.matched !== k.newSpelling).length,
           unknowns: unknowns.map((u) => u.word),
+          changedWords,
         };
       }
 
@@ -1419,9 +1453,11 @@
         const htmlLines = [];
         let totalChanges = 0;
         const allUnknowns = new Set();
+        // Keyed by lowercased output form so the same term only appears once.
+        const changedMap = new Map(); // to.toLowerCase() → {from, to}
 
         for (const line of lines) {
-          let { plain, html, count, unknowns } = applyReplacementsToLine(
+          let { plain, html, count, unknowns, changedWords } = applyReplacementsToLine(
             line,
             replacements,
             latexMode,
@@ -1437,13 +1473,23 @@
           htmlLines.push(html);
           totalChanges += count;
           for (const u of unknowns) allUnknowns.add(u.toLowerCase());
+          for (const cw of changedWords) {
+            const key = cw.to.toLowerCase();
+            if (!changedMap.has(key)) changedMap.set(key, cw);
+          }
         }
+
+        // Sort alphabetically by the output (IAST) form
+        const changedWords = [...changedMap.values()].sort((a, b) =>
+          a.to.localeCompare(b.to),
+        );
 
         return {
           plain: plainLines.join("\n"),
           html: htmlLines.join("\n"),
           totalChanges,
           unknowns: [...allUnknowns].sort(),
+          changedWords,
         };
       }
 
@@ -1461,6 +1507,7 @@
       const inputEl = document.getElementById("input-text");
       const outputEl = document.getElementById("output-highlight");
       const outputMeta = document.getElementById("output-meta");
+      const changedTermsEl = document.getElementById("changed-terms");
 
       function setStatus(cls, msg, showSpinner) {
         statusBar.className = cls;
@@ -1503,13 +1550,15 @@
         if (!input.trim()) {
           outputEl.textContent = "";
           outputMeta.innerHTML = "";
+          changedTermsEl.style.display = "none";
+          changedTermsEl.innerHTML = "";
           unknownTermsEl.style.display = "none";
           copyBtn.disabled = true;
           return;
         }
 
         const latexMode = latexToggle.checked;
-        const { plain, html, totalChanges, unknowns } = processText(
+        const { plain, html, totalChanges, unknowns, changedWords } = processText(
           input,
           replacements,
           latexMode,
@@ -1522,11 +1571,26 @@
 
         if (totalChanges === 0) {
           outputMeta.innerHTML = "No changes made.";
+          changedTermsEl.style.display = "none";
+          changedTermsEl.innerHTML = "";
         } else {
           const modeNote = latexMode
             ? ' <span class="mode-note">(LaTeX)</span>'
             : "";
           outputMeta.innerHTML = `<span>${totalChanges}</span> replacement${totalChanges === 1 ? "" : "s"} made${modeNote}`;
+
+          changedTermsEl.innerHTML = changedWords
+            .map(({ from, to }) => {
+              const fromNorm = from.toLowerCase();
+              const toNorm   = to.toLowerCase();
+              const inner =
+                fromNorm !== toNorm
+                  ? `${escapeHtml(from)}<span class="ch-arrow">→</span>${escapeHtml(to)}`
+                  : escapeHtml(to);
+              return `<span class="changed-chip">${inner}</span>`;
+            })
+            .join("");
+          changedTermsEl.style.display = changedWords.length ? "flex" : "none";
         }
         copyBtn.disabled = false;
 
