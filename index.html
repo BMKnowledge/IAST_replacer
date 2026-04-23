@@ -806,8 +806,11 @@
             }
           }
 
+          // Normalise spaces to [ \t\u00A0]+ so multi-word phrases match regardless
+          // of whether the XLSX used regular, non-breaking, or multiple spaces.
+          const escapedWrong = escapeRegex(wrong).replace(/ /g, "[ \\t\\u00A0]+");
           const pattern = new RegExp(
-            `(?<![${LETTER_CHARS}])${escapeRegex(wrong)}(?![${LETTER_CHARS}])`,
+            `(?<![${LETTER_CHARS}])${escapedWrong}(?![${LETTER_CHARS}])`,
             "gi",
           );
 
@@ -835,7 +838,24 @@
               seenWrong.set(key, rule);
               replacements.push(rule);
             } else {
-              seenWrong.set(key, null);
+              // Register a "protect" placeholder instead of a null sentinel.
+              // The protect rule generates a candidate during matching so that it
+              // wins the overlap-resolution race against shorter sub-phrase rules —
+              // e.g. "Paramahamsa Vishwananda" blocks "paramahamsa → paramahaṁsa"
+              // from firing mid-phrase. The candidate is rendered as passthrough
+              // (no spelling change, no highlight, no LaTeX wrapping).
+              const rule = {
+                wrong, right,
+                origin: "protect",
+                pattern,
+                italic: false,
+                italicOnly: false,
+                protect: true,
+                isDefault,
+                hasAlternate,
+              };
+              seenWrong.set(key, rule);
+              replacements.push(rule);
             }
             return;
           }
@@ -1032,8 +1052,10 @@
               latexMode && rule.italic && !insideLatexItalic;
             const wrapItalicHtml = rule.italic;
 
-            // Skip only if there is neither a spelling change nor any italic effect to show
-            if (matched === newSpelling && !wrapItalicLatex && !wrapItalicHtml)
+            // Skip if there is neither a spelling change nor any italic effect to show,
+            // UNLESS this is a protect placeholder (must always generate a candidate
+            // so it can win the overlap race against shorter sub-phrase rules).
+            if (matched === newSpelling && !wrapItalicLatex && !wrapItalicHtml && !rule.protect)
               continue;
 
             candidates.push({
@@ -1097,13 +1119,20 @@
             cursor = ev.end;
           } else {
             const { end, newSpelling, wrapItalicLatex, wrapItalicHtml, rule } = ev;
-            const cls = rule.hasAlternate ? ' class="alternate"' : "";
-            if (latexMode && wrapItalicLatex) {
-              htmlResult += `<mark${cls}>${escapeHtml(`\\textit{${newSpelling}}`)}</mark>`;
-            } else if (!latexMode && wrapItalicHtml) {
-              htmlResult += `<mark${cls}><em>${escapeHtml(newSpelling)}</em></mark>`;
+            if (rule.protect) {
+              // Protect placeholder: emit the original text verbatim — no highlight,
+              // no spelling change, no LaTeX wrapping.  Its only job was to win the
+              // overlap-resolution race so shorter sub-phrase rules couldn't fire.
+              htmlResult += escapeHtml(line.slice(ev.start, ev.end));
             } else {
-              htmlResult += `<mark${cls}>${escapeHtml(newSpelling)}</mark>`;
+              const cls = rule.hasAlternate ? ' class="alternate"' : "";
+              if (latexMode && wrapItalicLatex) {
+                htmlResult += `<mark${cls}>${escapeHtml(`\\textit{${newSpelling}}`)}</mark>`;
+              } else if (!latexMode && wrapItalicHtml) {
+                htmlResult += `<mark${cls}><em>${escapeHtml(newSpelling)}</em></mark>`;
+              } else {
+                htmlResult += `<mark${cls}>${escapeHtml(newSpelling)}</mark>`;
+              }
             }
             cursor = end;
           }
@@ -1112,7 +1141,8 @@
 
         let plain = line;
         for (let i = kept.length - 1; i >= 0; i--) {
-          const { start, end, newSpelling, wrapItalicLatex } = kept[i];
+          const { start, end, newSpelling, wrapItalicLatex, rule } = kept[i];
+          if (rule.protect) continue; // passthrough — leave original text intact
           const plainOut = wrapItalicLatex
             ? `\\textit{${newSpelling}}`
             : newSpelling;
@@ -1122,7 +1152,7 @@
         return {
           plain,
           html: htmlResult,
-          count: kept.length,
+          count: kept.filter((k) => !k.rule.protect).length,
           unknowns: unknowns.map((u) => u.word),
         };
       }
