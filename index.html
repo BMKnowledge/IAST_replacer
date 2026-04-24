@@ -687,14 +687,25 @@
         // "mayā" (where the user typed some diacritics but not all of them).
         ["ā", ["a", "ā"]],
         ["Ā", ["A", "Ā"]],
+        // ṛ can appear as "ri" (standard), plain "r" (ISKCON/common), or as ṛ itself
+        // (partial-IAST). All three options allow the engine to catch forms like
+        // "Krsnarpanam" (r), "Kṛṣṇarpaṇam" (ṛ kept), and "Krishnarpanam" (ri).
+        ["ṛ", ["ri", "r", "ṛ"]],
+        ["Ṛ", ["Ri", "R", "Ṛ"]],
+        // ṣ (retroflex sibilant) romanised as "sh", plain "s", or kept as ṣ.
+        ["ṣ", ["sh", "s", "ṣ"]],
+        ["Ṣ", ["Sh", "S", "Ṣ"]],
+        // ṇ (retroflex nasal) romanised as "n" or kept as ṇ for partial-IAST.
+        ["ṇ", ["n", "ṇ"]],
+        ["Ṇ", ["N", "Ṇ"]],
       ]);
 
       // Chars with a single canonical romanisation.
+      // Note: chars with multiple valid romanisations live in _VOWEL_VARIANT_CHOICES
+      // instead (ā, ś/Ś, c/C, ṛ/Ṛ, ṣ/Ṣ, ṇ/Ṇ).
       const _STANDARD_IAST_MAP = new Map([
         ["ā", "a"],
         ["Ā", "A"],
-        ["ṛ", "ri"],
-        ["Ṛ", "Ri"],
         ["ṝ", "ri"],
         ["ḷ", "l"],
         ["Ḷ", "L"],
@@ -704,24 +715,22 @@
         ["Ṁ", "M"],
         ["ḥ", "h"],
         ["Ḥ", "H"],
-        ["ṣ", "sh"],
-        ["Ṣ", "Sh"],
         ["ñ", "n"],
         ["Ñ", "N"],
         ["ṭ", "t"],
         ["Ṭ", "T"],
         ["ḍ", "d"],
         ["Ḍ", "D"],
-        ["ṇ", "n"],
-        ["Ṇ", "N"],
         ["ḻ", "l"],
         ["Ḻ", "L"],
         ["ṅ", "n"],
         ["Ṅ", "N"],
-        // Note: 'c'/'C' moved to _VOWEL_VARIANT_CHOICES (has two options: ch, c).
       ]);
 
-      const _VOWEL_VARIANT_MAX_COMBOS = 32;
+      // Upper bound on Cartesian-product combinations. Terms like Kṛṣṇārpaṇam
+      // have five variable chars (ṛ×3, ṣ×3, ṇ×2, ā×2, ṇ×2 = 72 combos), so 32
+      // was too low. 256 gives comfortable headroom for complex IAST compounds.
+      const _VOWEL_VARIANT_MAX_COMBOS = 256;
 
       /**
        * Generate alternative romanisations for common English phonetic spellings:
