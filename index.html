@@ -8,75 +8,75 @@
     <style>
       /* ── Design tokens ─────────────────────────────────────────────────────── */
       :root {
-        --c-bg:              #f5f3ee;
-        --c-surface:         #fff;
-        --c-surface-alt:     #fafaf8;
-        --c-border:          #ddd;
-        --c-border-subtle:   #e8e4dc;
-        --c-border-input:    #d0ccc4;
-        --c-text:            #2c2c2c;
-        --c-text-sub:        #666;
-        --c-text-muted:      #888;
-        --c-text-faint:      #aaa;
-        --c-text-input:      #1a1a1a;
-        --c-text-readonly:   #333;
-        --c-placeholder:     #bbb;
-        --c-focus:           #8b7355;
-        --c-accent:          #2c5282;
-        --c-mark-bg:         #d4edda;
-        --c-mark-fg:         #1a4731;
-        --c-mark-alt-bg:     #fde8c8;
-        --c-mark-alt-fg:     #7a4000;
+        --c-bg: #f5f3ee;
+        --c-surface: #fff;
+        --c-surface-alt: #fafaf8;
+        --c-border: #ddd;
+        --c-border-subtle: #e8e4dc;
+        --c-border-input: #d0ccc4;
+        --c-text: #2c2c2c;
+        --c-text-sub: #666;
+        --c-text-muted: #888;
+        --c-text-faint: #aaa;
+        --c-text-input: #1a1a1a;
+        --c-text-readonly: #333;
+        --c-placeholder: #bbb;
+        --c-focus: #8b7355;
+        --c-accent: #2c5282;
+        --c-mark-bg: #d4edda;
+        --c-mark-fg: #1a4731;
+        --c-mark-alt-bg: #fde8c8;
+        --c-mark-alt-fg: #7a4000;
         --c-mark-alt-border: #c47a00;
-        --c-mark-unk-bg:     #fff0c2;
-        --c-mark-unk-fg:     #7a5800;
-        --c-chip-border:     #e8d87a;
-        --c-btn-border:      #ccc;
-        --c-btn-text:        #555;
-        --c-btn-hover:       #333;
-        --c-toggle-track:    #ccc;
-        --c-toggle-label:    #555;
-        --c-status-ready:    #4a7c59;
-        --c-status-error:    #b94a4a;
-        --c-status-changed:  #2c5282;
-        --c-spinner-ring:    #ccc;
-        --c-spinner-head:    #888;
+        --c-mark-unk-bg: #fff0c2;
+        --c-mark-unk-fg: #7a5800;
+        --c-chip-border: #e8d87a;
+        --c-btn-border: #ccc;
+        --c-btn-text: #555;
+        --c-btn-hover: #333;
+        --c-toggle-track: #ccc;
+        --c-toggle-label: #555;
+        --c-status-ready: #4a7c59;
+        --c-status-error: #b94a4a;
+        --c-status-changed: #2c5282;
+        --c-spinner-ring: #ccc;
+        --c-spinner-head: #888;
       }
 
       body.dark {
-        --c-bg:              #161614;
-        --c-surface:         #222220;
-        --c-surface-alt:     #1c1c1a;
-        --c-border:          #363634;
-        --c-border-subtle:   #2c2c2a;
-        --c-border-input:    #3a3835;
-        --c-text:            #ddd9d0;
-        --c-text-sub:        #8a8a88;
-        --c-text-muted:      #666662;
-        --c-text-faint:      #555552;
-        --c-text-input:      #ccc8c0;
-        --c-text-readonly:   #a8a49c;
-        --c-placeholder:     #525250;
-        --c-focus:           #a08060;
-        --c-accent:          #7098c8;
-        --c-mark-bg:         #183525;
-        --c-mark-fg:         #5dbf85;
-        --c-mark-alt-bg:     #38200e;
-        --c-mark-alt-fg:     #d4904c;
+        --c-bg: #161614;
+        --c-surface: #222220;
+        --c-surface-alt: #1c1c1a;
+        --c-border: #363634;
+        --c-border-subtle: #2c2c2a;
+        --c-border-input: #3a3835;
+        --c-text: #ddd9d0;
+        --c-text-sub: #8a8a88;
+        --c-text-muted: #666662;
+        --c-text-faint: #555552;
+        --c-text-input: #ccc8c0;
+        --c-text-readonly: #a8a49c;
+        --c-placeholder: #525250;
+        --c-focus: #a08060;
+        --c-accent: #7098c8;
+        --c-mark-bg: #183525;
+        --c-mark-fg: #5dbf85;
+        --c-mark-alt-bg: #38200e;
+        --c-mark-alt-fg: #d4904c;
         --c-mark-alt-border: #a86820;
-        --c-mark-unk-bg:     #30290a;
-        --c-mark-unk-fg:     #c8a832;
-        --c-chip-border:     #685a18;
-        --c-btn-border:      #444440;
-        --c-btn-text:        #a0a09c;
-        --c-btn-hover:       #ddddd8;
-        --c-toggle-track:    #44443e;
-        --c-toggle-label:    #a0a09c;
-        --c-status-ready:    #5a9c6a;
-        --c-status-error:    #c86464;
-        --c-status-changed:  #6a92c4;
-        --c-spinner-ring:    #444440;
-        --c-spinner-head:    #888884;
+        --c-mark-unk-bg: #30290a;
+        --c-mark-unk-fg: #c8a832;
+        --c-chip-border: #685a18;
+        --c-btn-border: #444440;
+        --c-btn-text: #a0a09c;
+        --c-btn-hover: #ddddd8;
+        --c-toggle-track: #44443e;
+        --c-toggle-label: #a0a09c;
+        --c-status-ready: #5a9c6a;
+        --c-status-error: #c86464;
+        --c-status-changed: #6a92c4;
+        --c-spinner-ring: #444440;
+        --c-spinner-head: #888884;
       }
 
       /* ── Reset ─────────────────────────────────────────────────────────────── */
@@ -97,7 +97,9 @@
         min-height: 100vh;
         display: flex;
         flex-direction: column;
-        transition: background 0.2s, color 0.2s;
+        transition:
+          background 0.2s,
+          color 0.2s;
       }
 
       header {
@@ -132,7 +134,10 @@
         display: flex;
         align-items: center;
         justify-content: center;
-        transition: border-color 0.15s, color 0.15s, background 0.15s;
+        transition:
+          border-color 0.15s,
+          color 0.15s,
+          background 0.15s;
         flex-shrink: 0;
       }
       #theme-toggle:hover {
@@ -146,10 +151,18 @@
         display: block;
       }
       /* Show moon in light mode, sun in dark mode */
-      #theme-toggle .icon-sun  { display: none; }
-      #theme-toggle .icon-moon { display: block; }
-      body.dark #theme-toggle .icon-sun  { display: block; }
-      body.dark #theme-toggle .icon-moon { display: none; }
+      #theme-toggle .icon-sun {
+        display: none;
+      }
+      #theme-toggle .icon-moon {
+        display: block;
+      }
+      body.dark #theme-toggle .icon-sun {
+        display: block;
+      }
+      body.dark #theme-toggle .icon-moon {
+        display: none;
+      }
 
       #status-bar {
         background: var(--c-surface-alt);
@@ -163,10 +176,18 @@
         gap: 8px;
       }
 
-      #status-bar.loading { color: var(--c-text-muted); }
-      #status-bar.ready   { color: var(--c-status-ready); }
-      #status-bar.error   { color: var(--c-status-error); }
-      #status-bar.changed { color: var(--c-status-changed); }
+      #status-bar.loading {
+        color: var(--c-text-muted);
+      }
+      #status-bar.ready {
+        color: var(--c-status-ready);
+      }
+      #status-bar.error {
+        color: var(--c-status-error);
+      }
+      #status-bar.changed {
+        color: var(--c-status-changed);
+      }
 
       .spinner {
         display: inline-block;
@@ -180,7 +201,9 @@
       }
 
       @keyframes spin {
-        to { transform: rotate(360deg); }
+        to {
+          transform: rotate(360deg);
+        }
       }
 
       main {
@@ -219,12 +242,23 @@
         color: var(--c-text-input);
         resize: vertical;
         outline: none;
-        transition: border-color 0.15s, background 0.2s, color 0.2s;
+        transition:
+          border-color 0.15s,
+          background 0.2s,
+          color 0.2s;
       }
 
-      textarea:focus       { border-color: var(--c-focus); }
-      textarea[readonly]   { background: var(--c-surface-alt); color: var(--c-text-readonly); cursor: default; }
-      textarea::placeholder { color: var(--c-placeholder); }
+      textarea:focus {
+        border-color: var(--c-focus);
+      }
+      textarea[readonly] {
+        background: var(--c-surface-alt);
+        color: var(--c-text-readonly);
+        cursor: default;
+      }
+      textarea::placeholder {
+        color: var(--c-placeholder);
+      }
 
       .controls {
         display: flex;
@@ -248,10 +282,17 @@
         align-items: center;
         gap: 8px;
         white-space: nowrap;
-        transition: background 0.15s, opacity 0.15s;
+        transition:
+          background 0.15s,
+          opacity 0.15s;
       }
-      button#convert-btn:hover    { background: #4a6944; }
-      button#convert-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+      button#convert-btn:hover {
+        background: #4a6944;
+      }
+      button#convert-btn:disabled {
+        opacity: 0.45;
+        cursor: not-allowed;
+      }
 
       button#copy-btn {
         background: none;
@@ -261,11 +302,19 @@
         font-size: 0.8125rem;
         color: var(--c-btn-text);
         cursor: pointer;
-        transition: border-color 0.15s, color 0.15s;
+        transition:
+          border-color 0.15s,
+          color 0.15s;
         margin-top: 10px;
       }
-      button#copy-btn:hover    { border-color: var(--c-focus); color: var(--c-btn-hover); }
-      button#copy-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+      button#copy-btn:hover {
+        border-color: var(--c-focus);
+        color: var(--c-btn-hover);
+      }
+      button#copy-btn:disabled {
+        opacity: 0.4;
+        cursor: not-allowed;
+      }
 
       .arrow {
         font-size: 1.1rem;
@@ -278,8 +327,14 @@
         color: var(--c-text-muted);
         min-height: 1.2em;
       }
-      .output-meta span       { color: var(--c-accent); font-weight: 500; }
-      .output-meta .mode-note { color: var(--c-text-muted); font-weight: 400; }
+      .output-meta span {
+        color: var(--c-accent);
+        font-weight: 500;
+      }
+      .output-meta .mode-note {
+        color: var(--c-text-muted);
+        font-weight: 400;
+      }
 
       #output-highlight {
         width: 100%;
@@ -296,7 +351,10 @@
         overflow-y: auto;
         white-space: pre-wrap;
         word-wrap: break-word;
-        transition: background 0.2s, color 0.2s, border-color 0.2s;
+        transition:
+          background 0.2s,
+          color 0.2s,
+          border-color 0.2s;
       }
 
       #output-highlight mark {
@@ -342,7 +400,8 @@
       /* "from → to" arrow inside chip */
       .changed-chip .ch-arrow {
         opacity: 0.55;
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        font-family:
+          -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
         font-size: 0.7em;
         margin: 0 3px;
       }
@@ -395,7 +454,9 @@
         margin-top: 14px;
         white-space: nowrap;
       }
-      .toggle-label input[type="checkbox"] { display: none; }
+      .toggle-label input[type="checkbox"] {
+        display: none;
+      }
 
       .toggle-track {
         width: 34px;
@@ -417,8 +478,12 @@
         transition: left 0.2s;
         box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
       }
-      .toggle-label input:checked ~ .toggle-track              { background: #5a7a52; }
-      .toggle-label input:checked ~ .toggle-track .toggle-thumb { left: 17px; }
+      .toggle-label input:checked ~ .toggle-track {
+        background: #5a7a52;
+      }
+      .toggle-label input:checked ~ .toggle-track .toggle-thumb {
+        left: 17px;
+      }
 
       /* ── Footer ────────────────────────────────────────────────────────────── */
       footer {
@@ -428,7 +493,9 @@
         color: var(--c-text-faint);
         border-top: 1px solid var(--c-border-subtle);
       }
-      footer a { color: var(--c-text-faint); }
+      footer a {
+        color: var(--c-text-faint);
+      }
 
       /* ── Responsive ────────────────────────────────────────────────────────── */
       @media (max-width: 800px) {
@@ -442,13 +509,17 @@
           justify-content: flex-start;
           gap: 10px;
         }
-        .controls .arrow { display: none; }
+        .controls .arrow {
+          display: none;
+        }
         header {
           padding: 14px 16px;
           flex-wrap: wrap;
           gap: 4px;
         }
-        #status-bar { padding: 8px 16px; }
+        #status-bar {
+          padding: 8px 16px;
+        }
       }
     </style>
   </head>
@@ -456,22 +527,42 @@
     <header>
       <h1>IAST Replacer</h1>
       <p>Converts Sanskrit terms to standard IAST transliteration</p>
-      <button id="theme-toggle" aria-label="Toggle dark mode" title="Toggle dark mode">
+      <button
+        id="theme-toggle"
+        aria-label="Toggle dark mode"
+        title="Toggle dark mode"
+      >
         <!-- Moon: shown in light mode (click to go dark) -->
-        <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+        <svg
+          class="icon-moon"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
         </svg>
         <!-- Sun: shown in dark mode (click to go light) -->
-        <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <circle cx="12" cy="12" r="5"/>
-          <line x1="12" y1="1"  x2="12" y2="3"/>
-          <line x1="12" y1="21" x2="12" y2="23"/>
-          <line x1="4.22" y1="4.22"  x2="5.64" y2="5.64"/>
-          <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/>
-          <line x1="1"  y1="12" x2="3"  y2="12"/>
-          <line x1="21" y1="12" x2="23" y2="12"/>
-          <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/>
-          <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+        <svg
+          class="icon-sun"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <circle cx="12" cy="12" r="5" />
+          <line x1="12" y1="1" x2="12" y2="3" />
+          <line x1="12" y1="21" x2="12" y2="23" />
+          <line x1="4.22" y1="4.22" x2="5.64" y2="5.64" />
+          <line x1="18.36" y1="18.36" x2="19.78" y2="19.78" />
+          <line x1="1" y1="12" x2="3" y2="12" />
+          <line x1="21" y1="12" x2="23" y2="12" />
+          <line x1="4.22" y1="19.78" x2="5.64" y2="18.36" />
+          <line x1="18.36" y1="5.64" x2="19.78" y2="4.22" />
         </svg>
       </button>
     </header>
@@ -698,6 +789,12 @@
         // ṇ (retroflex nasal) romanised as "n" or kept as ṇ for partial-IAST.
         ["ṇ", ["n", "ṇ"]],
         ["Ṇ", ["N", "Ṇ"]],
+        // ṃ / ṁ (anusvāra) is often romanized as plain "m" or "n", or kept as ṃ / ṁ
+        // in partial-IAST input. Including both dotted forms helps catch mixed usage.
+        ["ṃ", ["m", "n", "ṁ", "ṃ"]],
+        ["Ṃ", ["M", "N", "Ṁ", "Ṃ"]],
+        ["ṁ", ["m", "n", "ṃ", "ṁ"]],
+        ["Ṁ", ["M", "N", "Ṃ", "Ṁ"]],
       ]);
 
       // Chars with a single canonical romanisation.
@@ -916,7 +1013,10 @@
 
           // Normalise spaces to [ \t\u00A0]+ so multi-word phrases match regardless
           // of whether the XLSX used regular, non-breaking, or multiple spaces.
-          const escapedWrong = escapeRegex(wrong).replace(/ /g, "[ \\t\\u00A0]+");
+          const escapedWrong = escapeRegex(wrong).replace(
+            / /g,
+            "[ \\t\\u00A0]+",
+          );
           const pattern = new RegExp(
             `(?<![${LETTER_CHARS}])${escapedWrong}(?![${LETTER_CHARS}])`,
             "gi",
@@ -935,7 +1035,8 @@
             const effectiveItalic = italic || evictedItalic;
             if (effectiveItalic) {
               const rule = {
-                wrong, right,
+                wrong,
+                right,
                 origin: "italic-only",
                 pattern,
                 italic: true,
@@ -953,7 +1054,8 @@
               // from firing mid-phrase. The candidate is rendered as passthrough
               // (no spelling change, no highlight, no LaTeX wrapping).
               const rule = {
-                wrong, right,
+                wrong,
+                right,
                 origin: "protect",
                 pattern,
                 italic: false,
@@ -969,7 +1071,8 @@
           }
 
           const rule = {
-            wrong, right,
+            wrong,
+            right,
             origin,
             pattern,
             italic: !!italic,
@@ -997,12 +1100,19 @@
             tryAdd(romForm, iastForm, origin, italic, isDefault);
 
             const dropped = generateDroppedAVariant(iastForm, romForm);
-            if (dropped) tryAdd(dropped[1], dropped[0], "dropped-a", italic, isDefault);
+            if (dropped)
+              tryAdd(dropped[1], dropped[0], "dropped-a", italic, isDefault);
 
-            for (const [vIast, vRom] of generateCompoundVariants(iastForm, romForm))
+            for (const [vIast, vRom] of generateCompoundVariants(
+              iastForm,
+              romForm,
+            ))
               tryAdd(vRom, vIast, "compound-variant", italic, isDefault);
 
-            for (const [vIast, vRom] of generateVowelVariants(iastForm, romForm))
+            for (const [vIast, vRom] of generateVowelVariants(
+              iastForm,
+              romForm,
+            ))
               tryAdd(vRom, vIast, "vowel-variant", italic, isDefault);
 
             // Register an italic-only rule for the IAST form itself so that text
@@ -1043,7 +1153,10 @@
         let before = line.slice(0, pos);
         // Strip a trailing LaTeX font command + opening brace so that
         // ". \textit{Bhakti}" is still recognised as post-sentence-end.
-        before = before.replace(/\\(?:textit|emph|textsl|textsf|textbf|texttt)\{$/, "");
+        before = before.replace(
+          /\\(?:textit|emph|textsl|textsf|textbf|texttt)\{$/,
+          "",
+        );
         if (before.trim() === "") {
           // Standalone term (nothing non-whitespace after the match) → use the
           // guide's canonical casing rather than forcing a sentence-initial capital.
@@ -1163,7 +1276,12 @@
             // Skip if there is neither a spelling change nor any italic effect to show,
             // UNLESS this is a protect placeholder (must always generate a candidate
             // so it can win the overlap race against shorter sub-phrase rules).
-            if (matched === newSpelling && !wrapItalicLatex && !wrapItalicHtml && !rule.protect)
+            if (
+              matched === newSpelling &&
+              !wrapItalicLatex &&
+              !wrapItalicHtml &&
+              !rule.protect
+            )
               continue;
 
             candidates.push({
@@ -1226,7 +1344,14 @@
             htmlResult += `<mark class="unknown">${escapeHtml(ev.word)}</mark>`;
             cursor = ev.end;
           } else {
-            const { end, matched, newSpelling, wrapItalicLatex, wrapItalicHtml, rule } = ev;
+            const {
+              end,
+              matched,
+              newSpelling,
+              wrapItalicLatex,
+              wrapItalicHtml,
+              rule,
+            } = ev;
             if (rule.protect) {
               // Protect placeholder: no italic wrapping, no hasAlternate highlight.
               // If the canonical casing differs from the input (e.g. "atma kriya yoga"
@@ -1254,7 +1379,8 @@
 
         let plain = line;
         for (let i = kept.length - 1; i >= 0; i--) {
-          const { start, end, matched, newSpelling, wrapItalicLatex, rule } = kept[i];
+          const { start, end, matched, newSpelling, wrapItalicLatex, rule } =
+            kept[i];
           if (rule.protect) {
             // Apply casing correction if the canonical form differs from input.
             // Never add \textit{} wrapping for protect entries.
@@ -1275,13 +1401,19 @@
         // Pure protect passthroughs (matched===newSpelling, no italic) are excluded.
         const changedWords = kept
           .filter((k) => k.matched !== k.newSpelling || k.wrapItalicHtml)
-          .map((k) => ({ from: k.matched, to: k.newSpelling, italic: k.wrapItalicHtml }));
+          .map((k) => ({
+            from: k.matched,
+            to: k.newSpelling,
+            italic: k.wrapItalicHtml,
+          }));
 
         return {
           plain,
           html: htmlResult,
           // Count actual changes: non-protect rules + protect rules that corrected casing
-          count: kept.filter((k) => !k.rule.protect || k.matched !== k.newSpelling).length,
+          count: kept.filter(
+            (k) => !k.rule.protect || k.matched !== k.newSpelling,
+          ).length,
           unknowns: unknowns.map((u) => u.word),
           changedWords,
         };
@@ -1471,12 +1603,8 @@
         const changedMap = new Map(); // to.toLowerCase() → {from, to}
 
         for (const line of lines) {
-          let { plain, html, count, unknowns, changedWords } = applyReplacementsToLine(
-            line,
-            replacements,
-            latexMode,
-            knownTerms,
-          );
+          let { plain, html, count, unknowns, changedWords } =
+            applyReplacementsToLine(line, replacements, latexMode, knownTerms);
           if (latexMode) {
             const eq = applyEnquoteToLine(plain, html);
             plain = eq.plain;
@@ -1572,12 +1700,8 @@
         }
 
         const latexMode = latexToggle.checked;
-        const { plain, html, totalChanges, unknowns, changedWords } = processText(
-          input,
-          replacements,
-          latexMode,
-          knownTerms,
-        );
+        const { plain, html, totalChanges, unknowns, changedWords } =
+          processText(input, replacements, latexMode, knownTerms);
 
         outputEl.innerHTML = html;
         outputEl._plain = plain;
