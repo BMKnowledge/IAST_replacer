@@ -1268,12 +1268,14 @@
           plain = plain.slice(0, start) + plainOut + plain.slice(end);
         }
 
-        // Collect {from, to} pairs for every kept change that altered the text.
-        // Protect rules with a casing correction are included; italic-only rules
-        // (where matched === newSpelling) are excluded — no visible spelling diff.
+        // Collect {from, to, italic} for every kept change that did *anything*:
+        //   • spelling/text change  (Krishna → Kṛṣṇa)
+        //   • capitalisation only   (atma   → Atma)
+        //   • italic wrapping only  (māyā   → _māyā_)
+        // Pure protect passthroughs (matched===newSpelling, no italic) are excluded.
         const changedWords = kept
-          .filter((k) => k.matched.toLowerCase() !== k.newSpelling.toLowerCase())
-          .map((k) => ({ from: k.matched, to: k.newSpelling }));
+          .filter((k) => k.matched !== k.newSpelling || k.wrapItalicHtml)
+          .map((k) => ({ from: k.matched, to: k.newSpelling, italic: k.wrapItalicHtml }));
 
         return {
           plain,
@@ -1592,13 +1594,17 @@
           outputMeta.innerHTML = `<span>${totalChanges}</span> replacement${totalChanges === 1 ? "" : "s"} made${modeNote}`;
 
           changedTermsEl.innerHTML = changedWords
-            .map(({ from, to }) => {
-              const fromNorm = from.toLowerCase();
-              const toNorm   = to.toLowerCase();
+            .map(({ from, to, italic }) => {
+              // Italicised output is rendered in <em> so the chip mirrors the effect.
+              const toHtml = italic
+                ? `<em>${escapeHtml(to)}</em>`
+                : escapeHtml(to);
+              // Show an arrow whenever the visible text changed (including case).
+              // Italic-only chips (from === to) just show the styled output word.
               const inner =
-                fromNorm !== toNorm
-                  ? `${escapeHtml(from)}<span class="ch-arrow">→</span>${escapeHtml(to)}`
-                  : escapeHtml(to);
+                from !== to
+                  ? `${escapeHtml(from)}<span class="ch-arrow">→</span>${toHtml}`
+                  : toHtml;
               return `<span class="changed-chip">${inner}</span>`;
             })
             .join("");
