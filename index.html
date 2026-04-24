@@ -672,12 +672,12 @@
 
       // Chars with multiple possible romanisations (canonical + English phonetic).
       const _VOWEL_VARIANT_CHOICES = new Map([
-        ["ī", ["i", "ee"]],
-        ["Ī", ["I", "Ee"]],
-        ["ū", ["u", "oo"]],
-        ["Ū", ["U", "Oo"]],
-        ["ś", ["sh", "s"]],
-        ["Ś", ["Sh", "S"]],
+        ["ī", ["i", "ee", "ī"]],
+        ["Ī", ["I", "Ee", "Ī"]],
+        ["ū", ["u", "oo", "ū"]],
+        ["Ū", ["U", "Oo", "Ū"]],
+        ["ś", ["sh", "s", "ś"]],
+        ["Ś", ["Sh", "S", "Ś"]],
         // IAST 'c' (palatal stop) is romanised 'ch' in English phonetics,
         // but some systems write it as plain 'c' (e.g. acarya / acharya).
         ["c", ["ch", "c"]],
@@ -878,8 +878,8 @@
          *   "māyā / maya (default)".
          */
         function tryAdd(wrong, right, origin, italic, isDefault = false) {
-          wrong = wrong.trim();
-          right = right.trim();
+          wrong = wrong.trim().normalize("NFC");
+          right = right.trim().normalize("NFC");
           if (!wrong || !right) return;
           const key = wrong.toLowerCase();
 
@@ -1448,7 +1448,10 @@
       // ---------------------------------------------------------------------------
 
       function processText(text, replacements, latexMode, knownTerms) {
-        const lines = text.split("\n");
+        // Normalise to NFC so that copy-pasted text with NFD diacritics
+        // (e.g. ṛ as r + combining dot, common from word processors / web pages)
+        // matches the NFC patterns built from the XLSX.
+        const lines = text.normalize("NFC").split("\n");
         const plainLines = [];
         const htmlLines = [];
         let totalChanges = 0;
