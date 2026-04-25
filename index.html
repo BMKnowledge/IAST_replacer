@@ -1266,6 +1266,13 @@
                   insideLatexItalic = true;
                 }
               }
+
+              // Content already inside an italic command must be left completely
+              // untouched. Even without adding \textit{}, matchCase could alter
+              // capitalisation (e.g. śrī→Śrī via sentence-start logic) or a rule's
+              // different IAST spelling (giridhāri→Giridhārī) could overwrite what
+              // the user deliberately wrote. Skip the candidate entirely.
+              if (insideLatexItalic) continue;
             }
 
             const wrapItalicLatex =
