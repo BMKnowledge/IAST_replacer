@@ -1023,11 +1023,11 @@
             // "brahmana → brāhmaṇa"). If the term is italic, emit an italic-only
             // rule so it gets wrapped in <em>/\textit{} even with no spelling change.
             //
-            // If this call evicted a previous italic rule (evictedItalic), inherit
-            // that italic flag even when the current row's cell isn't styled italic —
-            // the default row overrides the non-default, but the italic wrapping
-            // intent should be preserved.
-            const effectiveItalic = italic || evictedItalic;
+            // Use the current row's italic flag directly. The default row explicitly
+            // states its intent (italic or not), so we must not inherit italic from
+            // whatever rule we evicted — that caused non-italic default rows to
+            // re-register the IAST self-entry as italic (e.g. svāmī → _Svāmī_ bug).
+            const effectiveItalic = italic;
             if (effectiveItalic) {
               const rule = {
                 wrong,
@@ -1271,12 +1271,12 @@
             // Skip if there is neither a spelling change nor any italic effect to show,
             // UNLESS this is a protect placeholder (must always generate a candidate
             // so it can win the overlap race against shorter sub-phrase rules).
-            if (
-              matched === newSpelling &&
-              !wrapItalicLatex &&
-              !wrapItalicHtml &&
-              !rule.protect
-            )
+            // In LaTeX mode the only relevant italic flag is wrapItalicLatex —
+            // wrapItalicHtml is always true for italic rules regardless of context,
+            // so using it here would create false candidates for text already inside
+            // \textit{} (where wrapItalicLatex is suppressed).
+            const hasItalicEffect = latexMode ? wrapItalicLatex : wrapItalicHtml;
+            if (matched === newSpelling && !hasItalicEffect && !rule.protect)
               continue;
 
             candidates.push({
@@ -1394,12 +1394,15 @@
         //   • capitalisation only   (atma   → Atma)
         //   • italic wrapping only  (māyā   → _māyā_)
         // Pure protect passthroughs (matched===newSpelling, no italic) are excluded.
+        // In LaTeX mode use wrapItalicLatex — wrapItalicHtml is always true for
+        // italic rules and would falsely flag text already inside \textit{}.
         const changedWords = kept
-          .filter((k) => k.matched !== k.newSpelling || k.wrapItalicHtml)
+          .filter((k) => k.matched !== k.newSpelling ||
+            (latexMode ? k.wrapItalicLatex : k.wrapItalicHtml))
           .map((k) => ({
             from: k.matched,
             to: k.newSpelling,
-            italic: k.wrapItalicHtml,
+            italic: latexMode ? k.wrapItalicLatex : k.wrapItalicHtml,
           }));
 
         return {
