@@ -1142,7 +1142,11 @@
       // Case preservation
       // ---------------------------------------------------------------------------
 
-      const SENTENCE_END_RE = /[.!?]["'"')\]]*\s+$/;
+      // Matches a sentence-ending punctuation mark optionally followed by closing
+      // delimiters (quotes, parens, brackets, or LaTeX closing braces) and whitespace.
+      // The } is included so \enquote{...} and similar LaTeX commands are recognised
+      // as sentence-terminal when their content ends with . ! or ?.
+      const SENTENCE_END_RE = /[.!?]["'"')\]}]*\s+$/;
 
       function isAtSentenceStart(line, pos, end) {
         let before = line.slice(0, pos);
