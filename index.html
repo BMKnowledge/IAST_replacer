@@ -1243,19 +1243,18 @@
               isAtSentenceStart(line, start, end),
             );
 
-            // Determine whether to wrap in \textit{} / <em>:
-            //   - Only in LaTeX/italic mode
-            //   - Only when the term is italic-worthy (rule.italic)
-            //   - Not when it is already inside an italic command
+            // Determine whether the match falls inside an existing italic command.
+            // Computed for ALL rules (italic or not) in LaTeX mode, because content
+            // already inside \textit{} must be preserved verbatim — non-italic
+            // default rules (e.g. proper-noun casing like Śrī, Viṭṭhala) would
+            // otherwise still rewrite the user's deliberate text.
             let insideLatexItalic = false;
-
-            // Only relevant in LaTeX mode, to avoid double-wrapping with \textit{}
-            if (latexMode && rule.italic) {
+            if (latexMode) {
               insideLatexItalic = isInsideItalicSpans(start, end, italicSpans);
 
               // Belt-and-suspenders: even if the span scanner missed the case
-              // (unusual nesting), skip the wrap when the match is the direct
-              // argument — i.e. immediately preceded by \cmd{ and followed by }.
+              // (unusual nesting), detect when the match is the direct argument —
+              // i.e. immediately preceded by \cmd{ and followed by }.
               if (!insideLatexItalic) {
                 const pre = line.slice(0, start);
                 const post = line.slice(end);
@@ -1267,11 +1266,10 @@
                 }
               }
 
-              // Content already inside an italic command must be left completely
-              // untouched. Even without adding \textit{}, matchCase could alter
-              // capitalisation (e.g. śrī→Śrī via sentence-start logic) or a rule's
-              // different IAST spelling (giridhāri→Giridhārī) could overwrite what
-              // the user deliberately wrote. Skip the candidate entirely.
+              // Skip the candidate entirely. matchCase could alter capitalisation
+              // (śrī→Śrī via sentence-start logic) and a rule's IAST spelling could
+              // overwrite the user's chosen form (giridhāri→Giridhārī). The user
+              // already wrapped this content in \textit{} — respect their intent.
               if (insideLatexItalic) continue;
             }
 
