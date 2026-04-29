@@ -590,6 +590,11 @@
           <span class="toggle-track"><span class="toggle-thumb"></span></span>
           <span>LaTeX mode</span>
         </label>
+        <label class="toggle-label" for="romanized-toggle">
+          <input type="checkbox" id="romanized-toggle" />
+          <span class="toggle-track"><span class="toggle-thumb"></span></span>
+          <span>Romanized</span>
+        </label>
       </div>
 
       <div class="panel">
@@ -978,10 +983,14 @@
          *   guide lists e.g. "Māyā / Maya (as personality)" BEFORE
          *   "māyā / maya (default)".
          */
-        function tryAdd(wrong, right, origin, italic, isDefault = false) {
+        function tryAdd(wrong, right, origin, italic, isDefault = false, romRight = null) {
           wrong = wrong.trim().normalize("NFC");
           right = right.trim().normalize("NFC");
           if (!wrong || !right) return;
+          // romRight is the canonical romanized form (column B). Falls back to
+          // right (IAST) when not supplied — keeps romanized mode output sensible
+          // for any rule added without an explicit canonical romanized form.
+          const effectiveRomRight = (romRight ?? right).trim().normalize("NFC");
           const key = wrong.toLowerCase();
 
           let hasAlternate = false;
@@ -1032,6 +1041,7 @@
               const rule = {
                 wrong,
                 right,
+                romRight: effectiveRomRight,
                 origin: "italic-only",
                 pattern,
                 italic: true,
@@ -1051,6 +1061,7 @@
               const rule = {
                 wrong,
                 right,
+                romRight: effectiveRomRight,
                 origin: "protect",
                 pattern,
                 italic: false,
@@ -1068,6 +1079,7 @@
           const rule = {
             wrong,
             right,
+            romRight: effectiveRomRight,
             origin,
             pattern,
             italic: !!italic,
@@ -1092,29 +1104,31 @@
             // All rules from a default row carry isDefault so they can evict any
             // previously-registered non-default rules for the same romanized key —
             // including variants that a non-default row registered earlier.
-            tryAdd(romForm, iastForm, origin, italic, isDefault);
+            // romForm is passed as romRight so romanized-mode output uses the
+            // canonical romanized form (column B) rather than the IAST form.
+            tryAdd(romForm, iastForm, origin, italic, isDefault, romForm);
 
             const dropped = generateDroppedAVariant(iastForm, romForm);
             if (dropped)
-              tryAdd(dropped[1], dropped[0], "dropped-a", italic, isDefault);
+              tryAdd(dropped[1], dropped[0], "dropped-a", italic, isDefault, romForm);
 
             for (const [vIast, vRom] of generateCompoundVariants(
               iastForm,
               romForm,
             ))
-              tryAdd(vRom, vIast, "compound-variant", italic, isDefault);
+              tryAdd(vRom, vIast, "compound-variant", italic, isDefault, romForm);
 
             for (const [vIast, vRom] of generateVowelVariants(
               iastForm,
               romForm,
             ))
-              tryAdd(vRom, vIast, "vowel-variant", italic, isDefault);
+              tryAdd(vRom, vIast, "vowel-variant", italic, isDefault, romForm);
 
             // Register an italic-only rule for the IAST form itself so that text
             // already containing correct IAST characters (e.g. "ṛṣis") is still
-            // wrapped in <em>/\textit{} — the rom-form rule won't match it.
+            // wrapped in <em>/\textit{} / _..._ — the rom-form rule won't match it.
             if (iastForm !== romForm)
-              tryAdd(iastForm, iastForm, "italic-only", italic, isDefault);
+              tryAdd(iastForm, iastForm, "italic-only", italic, isDefault, romForm);
           }
         }
 
@@ -1225,6 +1239,7 @@
         replacements,
         latexMode,
         knownTerms,
+        romanizedMode = false,
       ) {
         // Pre-compute which character ranges are already inside an italic command
         // so we never double-wrap on repeated runs (idempotency).
@@ -1237,9 +1252,14 @@
             const start = m.index;
             const end = start + m[0].length;
             const matched = m[0];
+            // In romanized mode use the canonical romanized form (column B);
+            // in normal/LaTeX mode use the IAST form (column A).
+            const targetRight = romanizedMode
+              ? (rule.romRight ?? rule.right)
+              : rule.right;
             const newSpelling = matchCase(
               matched,
-              rule.right,
+              targetRight,
               isAtSentenceStart(line, start, end),
             );
 
@@ -1276,6 +1296,8 @@
             const wrapItalicLatex =
               latexMode && rule.italic && !insideLatexItalic;
             const wrapItalicHtml = rule.italic;
+            // romanizedMode wraps italic terms in _..._ in plain text output.
+            const wrapItalicRom = romanizedMode && rule.italic;
 
             // Skip if there is neither a spelling change nor any italic effect to show,
             // UNLESS this is a protect placeholder (must always generate a candidate
@@ -1296,6 +1318,7 @@
               rule,
               wrapItalicLatex,
               wrapItalicHtml,
+              wrapItalicRom,
             });
           }
         }
@@ -1383,17 +1406,19 @@
 
         let plain = line;
         for (let i = kept.length - 1; i >= 0; i--) {
-          const { start, end, matched, newSpelling, wrapItalicLatex, rule } =
+          const { start, end, matched, newSpelling, wrapItalicLatex, wrapItalicRom, rule } =
             kept[i];
           if (rule.protect) {
             // Apply casing correction if the canonical form differs from input.
-            // Never add \textit{} wrapping for protect entries.
+            // Never add \textit{} / _..._ wrapping for protect entries.
             if (matched !== newSpelling)
               plain = plain.slice(0, start) + newSpelling + plain.slice(end);
             continue;
           }
           const plainOut = wrapItalicLatex
             ? `\\textit{${newSpelling}}`
+            : wrapItalicRom
+            ? `_${newSpelling}_`
             : newSpelling;
           plain = plain.slice(0, start) + plainOut + plain.slice(end);
         }
@@ -1407,11 +1432,11 @@
         // italic rules and would falsely flag text already inside \textit{}.
         const changedWords = kept
           .filter((k) => k.matched !== k.newSpelling ||
-            (latexMode ? k.wrapItalicLatex : k.wrapItalicHtml))
+            (latexMode ? k.wrapItalicLatex : romanizedMode ? k.wrapItalicRom : k.wrapItalicHtml))
           .map((k) => ({
             from: k.matched,
             to: k.newSpelling,
-            italic: latexMode ? k.wrapItalicLatex : k.wrapItalicHtml,
+            italic: latexMode ? k.wrapItalicLatex : romanizedMode ? k.wrapItalicRom : k.wrapItalicHtml,
           }));
 
         return {
@@ -1597,7 +1622,7 @@
       // Process full text
       // ---------------------------------------------------------------------------
 
-      function processText(text, replacements, latexMode, knownTerms) {
+      function processText(text, replacements, latexMode, knownTerms, romanizedMode = false) {
         // Normalise to NFC so that copy-pasted text with NFD diacritics
         // (e.g. ṛ as r + combining dot, common from word processors / web pages)
         // matches the NFC patterns built from the XLSX.
@@ -1611,7 +1636,7 @@
 
         for (const line of lines) {
           let { plain, html, count, unknowns, changedWords } =
-            applyReplacementsToLine(line, replacements, latexMode, knownTerms);
+            applyReplacementsToLine(line, replacements, latexMode, knownTerms, romanizedMode);
           if (latexMode) {
             const eq = applyEnquoteToLine(plain, html);
             plain = eq.plain;
@@ -1689,6 +1714,15 @@
       }
 
       const latexToggle = document.getElementById("latex-toggle");
+      const romanizedToggle = document.getElementById("romanized-toggle");
+
+      // Toggles are mutually exclusive: turning one on turns the other off.
+      latexToggle.addEventListener("change", () => {
+        if (latexToggle.checked) romanizedToggle.checked = false;
+      });
+      romanizedToggle.addEventListener("change", () => {
+        if (romanizedToggle.checked) latexToggle.checked = false;
+      });
 
       const unknownTermsEl = document.getElementById("unknown-terms");
       const unknownChipsEl = document.getElementById("unknown-chips");
@@ -1707,12 +1741,14 @@
         }
 
         const latexMode = latexToggle.checked;
+        const romanizedMode = romanizedToggle.checked;
         const { plain, html, totalChanges, unknowns, changedWords } =
-          processText(input, replacements, latexMode, knownTerms);
+          processText(input, replacements, latexMode, knownTerms, romanizedMode);
 
         outputEl.innerHTML = html;
         outputEl._plain = plain;
         outputEl.classList.toggle("latex-output", latexMode);
+        outputEl.classList.toggle("romanized-output", romanizedMode);
 
         if (totalChanges === 0) {
           outputMeta.innerHTML = "No changes made.";
@@ -1721,6 +1757,8 @@
         } else {
           const modeNote = latexMode
             ? ' <span class="mode-note">(LaTeX)</span>'
+            : romanizedMode
+            ? ' <span class="mode-note">(Romanized)</span>'
             : "";
           outputMeta.innerHTML = `<span>${totalChanges}</span> replacement${totalChanges === 1 ? "" : "s"} made${modeNote}`;
 
