@@ -961,6 +961,73 @@
         return [iast, romDropped];
       }
 
+      /**
+       * Sandhi-variant generation: for compound rom forms with no internal separator
+       * that can be decomposed at an 'a' junction into two known guide stems,
+       * generate space- and hyphen-separated input variants.
+       *
+       *   "gunavatara" (= guṇa + avatāra after sandhi a+a → ā, written as 'a' in
+       *                  romanised form) splits at index 3 into:
+       *     part1 = "guna"     (in guide)
+       *     part2 = "avatara"  (matches guide entry "avatar(a)" via dropped-a)
+       *   → variants: "guna avatara", "guna-avatara",
+       *               "guna avatar",  "guna-avatar"
+       *
+       * Only triggers when the canonical rom contains no separator (otherwise
+       * generateCompoundVariants() already handles the splits) and at least one
+       * 'a' position can be found where both parts are recognised guide stems.
+       *
+       * Returns an array of [iast, variantRom] pairs — all map back to the same
+       * canonical (iast, rom) so romanized-mode output is the compound form.
+       */
+      function generateSandhiVariants(iast, rom, knownRoms) {
+        if (!rom || /[-\s]/.test(rom)) return [];
+        if (rom.length < 6) return []; // too short for a meaningful sandhi split
+
+        const variants = [];
+        const seen = new Set();
+        const lower = rom.toLowerCase();
+
+        // Walk every interior 'a' as a candidate sandhi junction. The shared 'a'
+        // belongs to the END of part1 — so part2 needs an 'a' prepended (its own
+        // initial 'a' that the sandhi merge consumed in the canonical form).
+        for (let i = 2; i < lower.length - 2; i++) {
+          if (lower[i] !== "a") continue;
+          const part1 = rom.slice(0, i + 1); // ends in 'a'
+          const part2 = "a" + rom.slice(i + 1); // restored leading 'a'
+
+          if (part1.length < 3 || part2.length < 3) continue;
+          if (!knownRoms.has(part1.toLowerCase())) continue;
+
+          // Accept part2 directly OR via dropped-a (e.g. "avatara" via "avatar").
+          // When the dropped-a form matches, register BOTH the dropped form
+          // (English-style "avatar") and the full form ("avatara") so users
+          // who spell out the final -a are also covered.
+          const part2Forms = new Set();
+          if (knownRoms.has(part2.toLowerCase())) {
+            part2Forms.add(part2);
+          } else if (
+            part2.endsWith("a") &&
+            knownRoms.has(part2.slice(0, -1).toLowerCase())
+          ) {
+            part2Forms.add(part2.slice(0, -1));
+            part2Forms.add(part2);
+          }
+          if (part2Forms.size === 0) continue;
+
+          for (const p2 of part2Forms) {
+            for (const sep of [" ", "-"]) {
+              const v = `${part1}${sep}${p2}`;
+              if (v.toLowerCase() === lower) continue; // collides with canonical
+              if (seen.has(v.toLowerCase())) continue;
+              seen.add(v.toLowerCase());
+              variants.push([iast, v]);
+            }
+          }
+        }
+        return variants;
+      }
+
       // ---------------------------------------------------------------------------
       // Build replacement rules
       // ---------------------------------------------------------------------------
@@ -972,6 +1039,22 @@
       function buildReplacements(rows) {
         const replacements = [];
         const seenWrong = new Map();
+
+        // Pre-pass: collect every romanized stem (incl. paren-expanded + dropped-a
+        // forms) so generateSandhiVariants() can validate that both parts of a
+        // candidate split (e.g. "guna" + "avatar" for "gunavatara") are actually
+        // recognised guide entries before generating space/hyphen variants.
+        const knownRoms = new Set();
+        for (const row of rows) {
+          const iast = (row["IAST"] || "").trim().normalize("NFC");
+          const rom = (row["Romanized Spelling"] || "").trim().normalize("NFC");
+          if (!iast || !rom) continue;
+          for (const [iastForm, romForm] of expandParentheses(iast, rom)) {
+            knownRoms.add(romForm.toLowerCase());
+            const dropped = generateDroppedAVariant(iastForm, romForm);
+            if (dropped) knownRoms.add(dropped[1].toLowerCase());
+          }
+        }
 
         /**
          * Register a replacement rule.
@@ -1123,6 +1206,16 @@
               romForm,
             ))
               tryAdd(vRom, vIast, "vowel-variant", italic, isDefault, romForm);
+
+            // Sandhi variants: recover space/hyphen-separated input forms for
+            // compounds the guide stores in already-merged form, e.g.
+            // "guna avatar" → canonical "gunavatara" (= guṇāvatāra).
+            for (const [vIast, vRom] of generateSandhiVariants(
+              iastForm,
+              romForm,
+              knownRoms,
+            ))
+              tryAdd(vRom, vIast, "sandhi-variant", italic, isDefault, romForm);
 
             // Register an italic-only rule for the IAST form itself so that text
             // already containing correct IAST characters (e.g. "ṛṣis") is still
