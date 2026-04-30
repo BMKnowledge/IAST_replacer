@@ -30,6 +30,8 @@
         --c-mark-alt-border: #c47a00;
         --c-mark-unk-bg: #fff0c2;
         --c-mark-unk-fg: #7a5800;
+        --c-mark-found-bg: #dbeafe;
+        --c-mark-found-fg: #1e3a6e;
         --c-chip-border: #e8d87a;
         --c-btn-border: #ccc;
         --c-btn-text: #555;
@@ -44,6 +46,8 @@
       }
 
       body.dark {
+        --c-mark-found-bg: #1a2d45;
+        --c-mark-found-fg: #7ab8e8;
         --c-bg: #161614;
         --c-surface: #222220;
         --c-surface-alt: #1c1c1a;
@@ -376,6 +380,14 @@
       #output-highlight mark.unknown {
         background: var(--c-mark-unk-bg);
         color: var(--c-mark-unk-fg);
+        border-radius: 2px;
+        padding: 0 1px;
+      }
+
+      /* Term recognised in the guide but already spelled correctly (romanized mode) */
+      #output-highlight mark.found {
+        background: var(--c-mark-found-bg);
+        color: var(--c-mark-found-fg);
         border-radius: 2px;
         padding: 0 1px;
       }
@@ -1399,8 +1411,10 @@
             // wrapItalicHtml is always true for italic rules regardless of context,
             // so using it here would create false candidates for text already inside
             // \textit{} (where wrapItalicLatex is suppressed).
+            // In romanized mode, keep all no-change candidates so we can show a
+            // "found in guide" mark — the user needs to know the term was recognised.
             const hasItalicEffect = latexMode ? wrapItalicLatex : wrapItalicHtml;
-            if (matched === newSpelling && !hasItalicEffect && !rule.protect)
+            if (matched === newSpelling && !hasItalicEffect && !rule.protect && !romanizedMode)
               continue;
 
             candidates.push({
@@ -1476,15 +1490,24 @@
               // Protect placeholder: no italic wrapping, no hasAlternate highlight.
               // If the canonical casing differs from the input (e.g. "atma kriya yoga"
               // → "Atma Kriya Yoga"), apply that casing correction with a plain mark.
-              // If the text is already correct, emit it verbatim with no mark at all.
+              // In romanized mode, show a "found in guide" mark even for no-change matches
+              // so the user can see the term was recognised.
               if (matched === newSpelling) {
-                htmlResult += escapeHtml(line.slice(ev.start, ev.end));
+                if (romanizedMode) {
+                  htmlResult += `<mark class="found">${escapeHtml(matched)}</mark>`;
+                } else {
+                  htmlResult += escapeHtml(line.slice(ev.start, ev.end));
+                }
               } else {
                 htmlResult += `<mark>${escapeHtml(newSpelling)}</mark>`;
               }
             } else {
               const cls = rule.hasAlternate ? ' class="alternate"' : "";
-              if (latexMode && wrapItalicLatex) {
+              // In romanized mode, a no-change non-protect candidate means the term is
+              // already in the canonical romanized form — show it as "found in guide".
+              if (romanizedMode && matched === newSpelling && !wrapItalicHtml) {
+                htmlResult += `<mark class="found">${escapeHtml(matched)}</mark>`;
+              } else if (latexMode && wrapItalicLatex) {
                 htmlResult += `<mark${cls}>${escapeHtml(`\\textit{${newSpelling}}`)}</mark>`;
               } else if (!latexMode && wrapItalicHtml) {
                 htmlResult += `<mark${cls}><em>${escapeHtml(newSpelling)}</em></mark>`;
@@ -1532,13 +1555,24 @@
             italic: latexMode ? k.wrapItalicLatex : romanizedMode ? k.wrapItalicRom : k.wrapItalicHtml,
           }));
 
+        // Count actual changes: text changed OR italic effect applied (not mere "found" passthroughs).
+        const changeCount = kept.filter((k) => {
+          if (k.rule.protect) return k.matched !== k.newSpelling; // protect: only casing corrections
+          const hasItalic = latexMode ? k.wrapItalicLatex : (romanizedMode ? k.wrapItalicRom : k.wrapItalicHtml);
+          return k.matched !== k.newSpelling || hasItalic;
+        }).length;
+
+        // Count terms recognised in the guide but already correctly spelled (romanized mode only).
+        const foundInGuide = romanizedMode ? kept.filter((k) => {
+          if (k.rule.protect) return k.matched === k.newSpelling;
+          return k.matched === k.newSpelling && !k.wrapItalicRom;
+        }).length : 0;
+
         return {
           plain,
           html: htmlResult,
-          // Count actual changes: non-protect rules + protect rules that corrected casing
-          count: kept.filter(
-            (k) => !k.rule.protect || k.matched !== k.newSpelling,
-          ).length,
+          count: changeCount,
+          foundInGuide,
           unknowns: unknowns.map((u) => u.word),
           changedWords,
         };
@@ -1723,12 +1757,13 @@
         const plainLines = [];
         const htmlLines = [];
         let totalChanges = 0;
+        let totalFound = 0;
         const allUnknowns = new Set();
         // Keyed by lowercased output form so the same term only appears once.
         const changedMap = new Map(); // to.toLowerCase() → {from, to}
 
         for (const line of lines) {
-          let { plain, html, count, unknowns, changedWords } =
+          let { plain, html, count, foundInGuide, unknowns, changedWords } =
             applyReplacementsToLine(line, replacements, latexMode, knownTerms, romanizedMode);
           if (latexMode) {
             const eq = applyEnquoteToLine(plain, html);
@@ -1739,6 +1774,7 @@
           plainLines.push(plain);
           htmlLines.push(html);
           totalChanges += count;
+          totalFound += foundInGuide ?? 0;
           for (const u of unknowns) allUnknowns.add(u.toLowerCase());
           for (const cw of changedWords) {
             const key = cw.to.toLowerCase();
@@ -1755,6 +1791,7 @@
           plain: plainLines.join("\n"),
           html: htmlLines.join("\n"),
           totalChanges,
+          totalFound,
           unknowns: [...allUnknowns].sort(),
           changedWords,
         };
@@ -1835,7 +1872,7 @@
 
         const latexMode = latexToggle.checked;
         const romanizedMode = romanizedToggle.checked;
-        const { plain, html, totalChanges, unknowns, changedWords } =
+        const { plain, html, totalChanges, totalFound, unknowns, changedWords } =
           processText(input, replacements, latexMode, knownTerms, romanizedMode);
 
         outputEl.innerHTML = html;
@@ -1843,7 +1880,7 @@
         outputEl.classList.toggle("latex-output", latexMode);
         outputEl.classList.toggle("romanized-output", romanizedMode);
 
-        if (totalChanges === 0) {
+        if (totalChanges === 0 && totalFound === 0) {
           outputMeta.innerHTML = "No changes made.";
           changedTermsEl.style.display = "none";
           changedTermsEl.innerHTML = "";
@@ -1853,7 +1890,12 @@
             : romanizedMode
             ? ' <span class="mode-note">(Romanized)</span>'
             : "";
-          outputMeta.innerHTML = `<span>${totalChanges}</span> replacement${totalChanges === 1 ? "" : "s"} made${modeNote}`;
+          let metaHtml = `<span>${totalChanges}</span> replacement${totalChanges === 1 ? "" : "s"} made`;
+          if (romanizedMode && totalFound > 0) {
+            metaHtml += `, <span style="color:var(--c-mark-found-fg)">${totalFound}</span> already correct`;
+          }
+          metaHtml += modeNote;
+          outputMeta.innerHTML = metaHtml;
 
           changedTermsEl.innerHTML = changedWords
             .map(({ from, to, italic }) => {
