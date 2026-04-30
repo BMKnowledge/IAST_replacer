@@ -32,6 +32,8 @@
         --c-mark-unk-fg: #7a5800;
         --c-mark-found-bg: #dbeafe;
         --c-mark-found-fg: #1e3a6e;
+        --c-chip-beae-bg: #ede9fe;
+        --c-chip-beae-fg: #4c1d95;
         --c-chip-border: #e8d87a;
         --c-btn-border: #ccc;
         --c-btn-text: #555;
@@ -48,6 +50,8 @@
       body.dark {
         --c-mark-found-bg: #1a2d45;
         --c-mark-found-fg: #7ab8e8;
+        --c-chip-beae-bg: #2e1a4a;
+        --c-chip-beae-fg: #c4b5fd;
         --c-bg: #161614;
         --c-surface: #222220;
         --c-surface-alt: #1c1c1a;
@@ -409,6 +413,11 @@
         white-space: nowrap;
       }
 
+      .changed-chip.be-ae {
+        background: var(--c-chip-beae-bg);
+        color: var(--c-chip-beae-fg);
+      }
+
       /* "from → to" arrow inside chip */
       .changed-chip .ch-arrow {
         opacity: 0.55;
@@ -607,6 +616,11 @@
           <span class="toggle-track"><span class="toggle-thumb"></span></span>
           <span>Romanized</span>
         </label>
+        <label class="toggle-label" for="beae-toggle" id="beae-toggle-label">
+          <input type="checkbox" id="beae-toggle" />
+          <span class="toggle-track"><span class="toggle-thumb"></span></span>
+          <span>AE spelling</span>
+        </label>
       </div>
 
       <div class="panel">
@@ -770,6 +784,47 @@
               isDefault: notes === "default",
             });
           }
+        }
+        return rows;
+      }
+
+      // ---------------------------------------------------------------------------
+      // BE→AE: load and parse BE_AE.xlsx
+      // ---------------------------------------------------------------------------
+
+      async function loadBEAEXLSX(url) {
+        const res = await fetch(url);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const buf = await res.arrayBuffer();
+        const zip = await JSZip.loadAsync(buf);
+        const ssFile = zip.file("xl/sharedStrings.xml");
+        const sharedStrings = ssFile
+          ? parseSharedStrings(await ssFile.async("string"))
+          : [];
+        const wsXml = await zip.file("xl/worksheets/sheet1.xml").async("string");
+        return parseBEAEWorksheet(wsXml, sharedStrings);
+      }
+
+      // Returns [{British, American}] rows (header row skipped).
+      function parseBEAEWorksheet(xml, sharedStrings) {
+        const doc = new DOMParser().parseFromString(xml, "text/xml");
+        const rows = [];
+        for (const row of doc.getElementsByTagName("row")) {
+          const rNum = parseInt(row.getAttribute("r") || "0", 10);
+          if (rNum === 1) continue; // skip header
+          const cells = {};
+          for (const c of row.getElementsByTagName("c")) {
+            const col = (c.getAttribute("r") || "").replace(/\d+$/, "");
+            const t = c.getAttribute("t");
+            const vEl = c.getElementsByTagName("v")[0];
+            let value = "";
+            if (t === "s" && vEl) value = sharedStrings[parseInt(vEl.textContent, 10)] ?? "";
+            else if (t === "inlineStr") value = [...c.getElementsByTagName("t")].map((n) => n.textContent).join("");
+            else if (vEl) value = vEl.textContent;
+            cells[col] = value.trim();
+          }
+          const be = cells["A"] || "", ae = cells["B"] || "";
+          if (be && ae) rows.push({ British: be, American: ae });
         }
         return rows;
       }
@@ -1038,6 +1093,104 @@
           }
         }
         return variants;
+      }
+
+      // ---------------------------------------------------------------------------
+      // BE→AE: suffix expansion + rule builder
+      // ---------------------------------------------------------------------------
+
+      /**
+       * Given a BE stem and its AE equivalent, auto-generate common inflected
+       * pairs so the word list only needs to contain stems.
+       *
+       *   -our → -or   (colour/color)
+       *     generates: +s, +ed, +ing, +ful, +less
+       *
+       *   -ise → -ize  (realise/realize)
+       *     generates: +s, +d, stem+ing (realising/realizing),
+       *                stem+ation (realisation/realization), stem+er
+       *
+       *   -re  → -er   (centre/center)
+       *     generates: +s, +d→+ed (centred/centered), stem+ing (centring/centering)
+       *
+       *   -ce  → -se   (defence/defense)
+       *     generates: +s
+       *
+       *   -ogue → -og  (catalogue/catalog)
+       *     generates: +s, +d→+ed (catalogued/cataloged), stem+ing (cataloguing/cataloging)
+       */
+      function generateBEAESuffixVariants(be, ae) {
+        const v = [];
+
+        if (be.endsWith("our") && ae.endsWith("or")) {
+          for (const s of ["s", "ed", "ing", "ful", "less"])
+            v.push([be + s, ae + s]);
+
+        } else if (be.endsWith("ise") && ae.endsWith("ize")) {
+          v.push([be + "s", ae + "s"]);
+          v.push([be + "d", ae + "d"]);
+          const bs = be.slice(0, -1), as_ = ae.slice(0, -1); // "realis", "realiz"
+          v.push([bs + "ing",    as_ + "ing"]);
+          v.push([bs + "ation",  as_ + "ation"]);
+          v.push([bs + "er",     as_ + "er"]);
+
+        } else if (be.endsWith("re") && ae.endsWith("er")) {
+          v.push([be + "s", ae + "s"]);
+          v.push([be + "d", ae + "ed"]);                      // centred / centered
+          v.push([be.slice(0, -1) + "ing", ae + "ing"]);     // centring / centering
+
+        } else if (be.endsWith("ce") && ae.endsWith("se")) {
+          v.push([be + "s", ae + "s"]);
+
+        } else if (be.endsWith("ogue") && ae.endsWith("og")) {
+          v.push([be + "s", ae + "s"]);
+          v.push([be + "d", ae + "ed"]);                      // catalogued / cataloged
+          v.push([be.slice(0, -1) + "ing", ae + "ing"]);     // cataloguing / cataloging
+        }
+
+        return v;
+      }
+
+      /**
+       * Build replacement rules from BE_AE.xlsx rows.
+       * Rules are tagged origin:"be-ae" and merged into the global replacements
+       * array. applyReplacementsToLine skips them when beAeMode is false.
+       */
+      function buildBEAERules(rows) {
+        const rules = [];
+        const seen = new Set();
+
+        function tryAdd(be, ae) {
+          be = be.trim().normalize("NFC");
+          ae = ae.trim().normalize("NFC");
+          if (!be || !ae || be.toLowerCase() === ae.toLowerCase()) return;
+          const key = be.toLowerCase();
+          if (seen.has(key)) return;
+          seen.add(key);
+
+          const escaped = escapeRegex(be).replace(/ /g, "[ \\t\\u00A0]+");
+          const pattern = new RegExp(
+            `(?<![${LETTER_CHARS}])${escaped}(?![${LETTER_CHARS}])`,
+            "gi",
+          );
+          rules.push({
+            wrong: be, right: ae, romRight: ae,
+            origin: "be-ae", pattern,
+            italic: false, italicOnly: false,
+            isDefault: false, hasAlternate: false,
+          });
+        }
+
+        for (const row of rows) {
+          const be = (row.British || "").trim();
+          const ae = (row.American || "").trim();
+          if (!be || !ae) continue;
+          tryAdd(be, ae);
+          for (const [bv, av] of generateBEAESuffixVariants(be, ae))
+            tryAdd(bv, av);
+        }
+
+        return rules;
       }
 
       // ---------------------------------------------------------------------------
@@ -1345,6 +1498,7 @@
         latexMode,
         knownTerms,
         romanizedMode = false,
+        beAeMode = false,
       ) {
         // Pre-compute which character ranges are already inside an italic command
         // so we never double-wrap on repeated runs (idempotency).
@@ -1353,6 +1507,8 @@
         const candidates = [];
 
         for (const rule of replacements) {
+          // Skip BE→AE rules when the toggle is off
+          if (rule.origin === "be-ae" && !beAeMode) continue;
           for (const m of line.matchAll(rule.pattern)) {
             const start = m.index;
             const end = start + m[0].length;
@@ -1553,6 +1709,7 @@
             from: k.matched,
             to: k.newSpelling,
             italic: latexMode ? k.wrapItalicLatex : romanizedMode ? k.wrapItalicRom : k.wrapItalicHtml,
+            origin: k.rule?.origin ?? "",
           }));
 
         // Count actual changes: text changed OR italic effect applied (not mere "found" passthroughs).
@@ -1568,11 +1725,17 @@
           return k.matched === k.newSpelling && !k.wrapItalicRom;
         }).length : 0;
 
+        // Count BE→AE spelling changes (subset of changeCount).
+        const beAeCount = kept.filter(
+          (k) => k.rule.origin === "be-ae" && k.matched !== k.newSpelling,
+        ).length;
+
         return {
           plain,
           html: htmlResult,
           count: changeCount,
           foundInGuide,
+          beAeCount,
           unknowns: unknowns.map((u) => u.word),
           changedWords,
         };
@@ -1749,7 +1912,7 @@
       // Process full text
       // ---------------------------------------------------------------------------
 
-      function processText(text, replacements, latexMode, knownTerms, romanizedMode = false) {
+      function processText(text, replacements, latexMode, knownTerms, romanizedMode = false, beAeMode = false) {
         // Normalise to NFC so that copy-pasted text with NFD diacritics
         // (e.g. ṛ as r + combining dot, common from word processors / web pages)
         // matches the NFC patterns built from the XLSX.
@@ -1758,13 +1921,14 @@
         const htmlLines = [];
         let totalChanges = 0;
         let totalFound = 0;
+        let totalBEAE = 0;
         const allUnknowns = new Set();
         // Keyed by lowercased output form so the same term only appears once.
         const changedMap = new Map(); // to.toLowerCase() → {from, to}
 
         for (const line of lines) {
-          let { plain, html, count, foundInGuide, unknowns, changedWords } =
-            applyReplacementsToLine(line, replacements, latexMode, knownTerms, romanizedMode);
+          let { plain, html, count, foundInGuide, beAeCount, unknowns, changedWords } =
+            applyReplacementsToLine(line, replacements, latexMode, knownTerms, romanizedMode, beAeMode);
           if (latexMode) {
             const eq = applyEnquoteToLine(plain, html);
             plain = eq.plain;
@@ -1775,6 +1939,7 @@
           htmlLines.push(html);
           totalChanges += count;
           totalFound += foundInGuide ?? 0;
+          totalBEAE += beAeCount ?? 0;
           for (const u of unknowns) allUnknowns.add(u.toLowerCase());
           for (const cw of changedWords) {
             const key = cw.to.toLowerCase();
@@ -1792,6 +1957,7 @@
           html: htmlLines.join("\n"),
           totalChanges,
           totalFound,
+          totalBEAE,
           unknowns: [...allUnknowns].sort(),
           changedWords,
         };
@@ -1803,6 +1969,7 @@
 
       let replacements = null;
       let knownTerms = null;
+      let beAeRulesCount = 0;
 
       const statusBar = document.getElementById("status-bar");
       const statusText = document.getElementById("status-text");
@@ -1830,11 +1997,32 @@
         try {
           const rows = await loadXLSX("IAST.xlsx");
           const result = buildReplacements(rows);
-          replacements = result.replacements;
           knownTerms = result.knownTerms;
+
+          // Load BE→AE data (optional — app still works without it)
+          let beAeRules = [];
+          try {
+            const beAeRows = await loadBEAEXLSX("BE_AE.xlsx");
+            beAeRules = buildBEAERules(beAeRows);
+            beAeRulesCount = beAeRules.length;
+          } catch {
+            // BE_AE.xlsx not found or failed to parse — disable the toggle
+            beAeToggle.disabled = true;
+            beAeToggleLabel.style.opacity = "0.4";
+            beAeToggleLabel.title = "BE_AE.xlsx not found";
+          }
+
+          // Merge IAST + BE→AE rules into one sorted array (longer matches first)
+          replacements = [...result.replacements, ...beAeRules].sort(
+            (a, b) => b.wrong.length - a.wrong.length || a.wrong.localeCompare(b.wrong),
+          );
+
+          const aeNote = beAeRulesCount
+            ? `  ·  ${beAeRulesCount} AE spelling rules`
+            : "";
           setStatus(
             "ready",
-            `Ready — ${replacements.length} replacement rules loaded`,
+            `Ready — ${result.replacements.length} IAST rules${aeNote}`,
             false,
           );
           convertBtn.disabled = false;
@@ -1845,6 +2033,8 @@
 
       const latexToggle = document.getElementById("latex-toggle");
       const romanizedToggle = document.getElementById("romanized-toggle");
+      const beAeToggle = document.getElementById("beae-toggle");
+      const beAeToggleLabel = document.getElementById("beae-toggle-label");
 
       // Toggles are mutually exclusive: turning one on turns the other off.
       latexToggle.addEventListener("change", () => {
@@ -1872,8 +2062,9 @@
 
         const latexMode = latexToggle.checked;
         const romanizedMode = romanizedToggle.checked;
-        const { plain, html, totalChanges, totalFound, unknowns, changedWords } =
-          processText(input, replacements, latexMode, knownTerms, romanizedMode);
+        const beAeMode = beAeToggle.checked;
+        const { plain, html, totalChanges, totalFound, totalBEAE, unknowns, changedWords } =
+          processText(input, replacements, latexMode, knownTerms, romanizedMode, beAeMode);
 
         outputEl.innerHTML = html;
         outputEl._plain = plain;
@@ -1885,12 +2076,22 @@
           changedTermsEl.style.display = "none";
           changedTermsEl.innerHTML = "";
         } else {
-          const modeNote = latexMode
-            ? ' <span class="mode-note">(LaTeX)</span>'
-            : romanizedMode
-            ? ' <span class="mode-note">(Romanized)</span>'
+          const modeParts = [];
+          if (latexMode) modeParts.push("LaTeX");
+          if (romanizedMode) modeParts.push("Romanized");
+          if (beAeMode) modeParts.push("AE");
+          const modeNote = modeParts.length
+            ? ` <span class="mode-note">(${modeParts.join(" · ")})</span>`
             : "";
-          let metaHtml = `<span>${totalChanges}</span> replacement${totalChanges === 1 ? "" : "s"} made`;
+
+          // Main replacement count — split IAST vs AE when both are active
+          const iastChanges = totalChanges - totalBEAE;
+          let metaHtml;
+          if (beAeMode && totalBEAE > 0 && iastChanges > 0) {
+            metaHtml = `<span>${iastChanges}</span> IAST · <span style="color:var(--c-chip-beae-fg)">${totalBEAE}</span> AE spelling`;
+          } else {
+            metaHtml = `<span>${totalChanges}</span> replacement${totalChanges === 1 ? "" : "s"} made`;
+          }
           if (romanizedMode && totalFound > 0) {
             metaHtml += `, <span style="color:var(--c-mark-found-fg)">${totalFound}</span> already correct`;
           }
@@ -1898,7 +2099,7 @@
           outputMeta.innerHTML = metaHtml;
 
           changedTermsEl.innerHTML = changedWords
-            .map(({ from, to, italic }) => {
+            .map(({ from, to, italic, origin }) => {
               // Italicised output is rendered in <em> so the chip mirrors the effect.
               const toHtml = italic
                 ? `<em>${escapeHtml(to)}</em>`
@@ -1909,7 +2110,8 @@
                 from !== to
                   ? `${escapeHtml(from)}<span class="ch-arrow">→</span>${toHtml}`
                   : toHtml;
-              return `<span class="changed-chip">${inner}</span>`;
+              const cls = origin === "be-ae" ? " be-ae" : "";
+              return `<span class="changed-chip${cls}">${inner}</span>`;
             })
             .join("");
           changedTermsEl.style.display = changedWords.length ? "flex" : "none";
