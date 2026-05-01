@@ -1425,6 +1425,34 @@
                 isDefault,
                 romForm,
               );
+
+            // Near-IAST variants: for compound IAST forms (with hyphens/spaces),
+            // also register rules where short vowels (i, u) appear as their long
+            // equivalents (ī, ū) in user input — a common partial-IAST typing
+            // mistake (e.g. "Brahma-nāḍī" should match guide entry "Brahma-nāḍi").
+            if (iastForm !== romForm && /[-\s]/.test(iastForm)) {
+              const _NEAR_LONG = new Map([
+                ["i", "ī"],
+                ["I", "Ī"],
+                ["u", "ū"],
+                ["U", "Ū"],
+              ]);
+              const _chars = [...iastForm];
+              for (let _k = 0; _k < _chars.length; _k++) {
+                if (_NEAR_LONG.has(_chars[_k])) {
+                  const _v = _chars.slice();
+                  _v[_k] = _NEAR_LONG.get(_chars[_k]);
+                  tryAdd(
+                    _v.join(""),
+                    iastForm,
+                    "near-iast",
+                    italic,
+                    isDefault,
+                    romForm,
+                  );
+                }
+              }
+            }
           }
         }
 
@@ -2235,17 +2263,49 @@
       });
 
       copyBtn.addEventListener("click", async () => {
-        const plain = outputEl._plain;
+        const plain = (outputEl._plain || "").trim();
         if (!plain) return;
-        try {
-          await navigator.clipboard.writeText(plain);
+
+        function buildCopyHtml() {
+          const clone = outputEl.cloneNode(true);
+
+          // Remove highlight <mark> wrappers, but preserve their contents.
+          for (const mark of [...clone.querySelectorAll("mark")]) {
+            mark.replaceWith(...mark.childNodes);
+          }
+
+          // Preserve line breaks from the preview, but remove outer whitespace.
+          const html = clone.innerHTML.trim().replace(/\n/g, "<br>");
+
+          return `<div style="font-family: Georgia, 'Times New Roman', serif; line-height: 1.7;">${html}</div>`;
+        }
+
+        function flashCopied() {
           const prev = copyBtn.textContent;
           copyBtn.textContent = "Copied!";
           setTimeout(() => {
             copyBtn.textContent = prev;
           }, 1500);
+        }
+
+        try {
+          const html = buildCopyHtml();
+
+          // Rich clipboard copy: keeps <em> italics in Word, Google Docs, email, etc.
+          if (window.ClipboardItem) {
+            await navigator.clipboard.write([
+              new ClipboardItem({
+                "text/html": new Blob([html], { type: "text/html" }),
+                "text/plain": new Blob([plain], { type: "text/plain" }),
+              }),
+            ]);
+          } else {
+            await navigator.clipboard.writeText(plain);
+          }
+
+          flashCopied();
         } catch {
-          // fallback
+          // Fallback: plain-text copy only.
           const ta = document.createElement("textarea");
           ta.value = plain;
           ta.style.position = "fixed";
@@ -2254,6 +2314,7 @@
           ta.select();
           document.execCommand("copy");
           ta.remove();
+          flashCopied();
         }
       });
 
