@@ -1035,6 +1035,111 @@
         return [iast, romDropped];
       }
 
+      function generateTokenWiseDiacriticVariants(iast, rom) {
+        const variants = [];
+        const seen = new Set();
+
+        function stripDiacriticsToken(token) {
+          let out = "";
+          for (const ch of token) {
+            if (_VOWEL_VARIANT_CHOICES.has(ch)) {
+              out += _VOWEL_VARIANT_CHOICES.get(ch)[0];
+            } else if (_STANDARD_IAST_MAP.has(ch)) {
+              out += _STANDARD_IAST_MAP.get(ch);
+            } else {
+              out += ch;
+            }
+          }
+          return out;
+        }
+
+        function tokenVariants(token) {
+          const forms = new Set();
+
+          if (!token) return [""];
+
+          // Original token as written.
+          forms.add(token);
+
+          // Plain ASCII-ish version of any IAST token.
+          forms.add(stripDiacriticsToken(token));
+
+          // Existing full vowel/diacritic variants for this token.
+          for (const [, vRom] of generateVowelVariants(
+            token,
+            stripDiacriticsToken(token),
+          )) {
+            forms.add(vRom);
+          }
+
+          // Dropped final -a from plain romanized token.
+          for (const form of [...forms]) {
+            if (
+              form.endsWith("a") &&
+              !form.endsWith("ā") &&
+              form.length >= DROPPED_A_MIN_STEM_LEN
+            ) {
+              forms.add(form.slice(0, -1));
+            }
+
+            // Dropped final -ā from partial/full IAST token.
+            if (form.endsWith("ā") && form.length >= DROPPED_A_MIN_STEM_LEN) {
+              forms.add(form.slice(0, -1));
+            }
+          }
+
+          return [...forms].filter(Boolean);
+        }
+
+        function add(out) {
+          const cleaned = out.trim().normalize("NFC");
+          if (!cleaned) return;
+
+          const key = cleaned.toLowerCase();
+          if (key === iast.toLowerCase()) return;
+          if (key === rom.toLowerCase()) return;
+          if (seen.has(key)) return;
+
+          seen.add(key);
+          variants.push([iast, cleaned]);
+        }
+
+        // Split while preserving spaces and hyphens.
+        const iastParts = iast.split(/([-\s]+)/);
+        const romParts = rom.split(/([-\s]+)/);
+
+        if (iastParts.length !== romParts.length) return [];
+
+        const perPartOptions = iastParts.map((part, index) => {
+          // Separators stay fixed, but allow hyphen/space interchange elsewhere
+          // through your existing regex normalization in tryAdd().
+          if (/^[-\s]+$/.test(part)) return [part];
+
+          const opts = new Set();
+
+          // Variants from both IAST and romanized token.
+          for (const v of tokenVariants(part)) opts.add(v);
+          for (const v of tokenVariants(romParts[index])) opts.add(v);
+
+          return [...opts];
+        });
+
+        let totalCombos = perPartOptions.reduce(
+          (n, opts) => n * opts.length,
+          1,
+        );
+        if (totalCombos > _VOWEL_VARIANT_MAX_COMBOS * 4) return [];
+
+        const combos = perPartOptions.reduce(
+          (acc, opts) =>
+            acc.flatMap((prefix) => opts.map((opt) => prefix + opt)),
+          [""],
+        );
+
+        for (const combo of combos) add(combo);
+
+        return variants;
+      }
       /**
        * Sandhi-variant generation: for compound rom forms with no internal separator
        * that can be decomposed at an 'a' junction into two known guide stems,
@@ -1403,6 +1508,24 @@
             ))
               tryAdd(vRom, vIast, "vowel-variant", italic, isDefault, romForm);
 
+            // Generic token-wise Sanskrit diacritic variants.
+            // This catches mixed partial-IAST / romanized forms such as:
+            //   Mahavatar Bābājī  → Mahāvatāra Bābājī
+            //   Mahāvatār Babaji  → Mahāvatāra Bābājī
+            //   sushumnā nāḍi     → suṣumṇā-nāḍī, if that entry exists in the guide
+            for (const [vIast, vRom] of generateTokenWiseDiacriticVariants(
+              iastForm,
+              romForm,
+            )) {
+              tryAdd(
+                vRom,
+                vIast,
+                "token-wise-diacritic-variant",
+                italic,
+                isDefault,
+                romForm,
+              );
+            }
             // Sandhi variants: recover space/hyphen-separated input forms for
             // compounds the guide stores in already-merged form, e.g.
             // "guna avatar" → canonical "gunavatara" (= guṇāvatāra).
