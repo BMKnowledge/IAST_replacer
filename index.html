@@ -801,7 +801,9 @@
         const sharedStrings = ssFile
           ? parseSharedStrings(await ssFile.async("string"))
           : [];
-        const wsXml = await zip.file("xl/worksheets/sheet1.xml").async("string");
+        const wsXml = await zip
+          .file("xl/worksheets/sheet1.xml")
+          .async("string");
         return parseBEAEWorksheet(wsXml, sharedStrings);
       }
 
@@ -818,12 +820,17 @@
             const t = c.getAttribute("t");
             const vEl = c.getElementsByTagName("v")[0];
             let value = "";
-            if (t === "s" && vEl) value = sharedStrings[parseInt(vEl.textContent, 10)] ?? "";
-            else if (t === "inlineStr") value = [...c.getElementsByTagName("t")].map((n) => n.textContent).join("");
+            if (t === "s" && vEl)
+              value = sharedStrings[parseInt(vEl.textContent, 10)] ?? "";
+            else if (t === "inlineStr")
+              value = [...c.getElementsByTagName("t")]
+                .map((n) => n.textContent)
+                .join("");
             else if (vEl) value = vEl.textContent;
             cells[col] = value.trim();
           }
-          const be = cells["A"] || "", ae = cells["B"] || "";
+          const be = cells["A"] || "",
+            ae = cells["B"] || "";
           if (be && ae) rows.push({ British: be, American: ae });
         }
         return rows;
@@ -1125,27 +1132,24 @@
         if (be.endsWith("our") && ae.endsWith("or")) {
           for (const s of ["s", "ed", "ing", "ful", "less"])
             v.push([be + s, ae + s]);
-
         } else if (be.endsWith("ise") && ae.endsWith("ize")) {
           v.push([be + "s", ae + "s"]);
           v.push([be + "d", ae + "d"]);
-          const bs = be.slice(0, -1), as_ = ae.slice(0, -1); // "realis", "realiz"
-          v.push([bs + "ing",    as_ + "ing"]);
-          v.push([bs + "ation",  as_ + "ation"]);
-          v.push([bs + "er",     as_ + "er"]);
-
+          const bs = be.slice(0, -1),
+            as_ = ae.slice(0, -1); // "realis", "realiz"
+          v.push([bs + "ing", as_ + "ing"]);
+          v.push([bs + "ation", as_ + "ation"]);
+          v.push([bs + "er", as_ + "er"]);
         } else if (be.endsWith("re") && ae.endsWith("er")) {
           v.push([be + "s", ae + "s"]);
-          v.push([be + "d", ae + "ed"]);                      // centred / centered
-          v.push([be.slice(0, -1) + "ing", ae + "ing"]);     // centring / centering
-
+          v.push([be + "d", ae + "ed"]); // centred / centered
+          v.push([be.slice(0, -1) + "ing", ae + "ing"]); // centring / centering
         } else if (be.endsWith("ce") && ae.endsWith("se")) {
           v.push([be + "s", ae + "s"]);
-
         } else if (be.endsWith("ogue") && ae.endsWith("og")) {
           v.push([be + "s", ae + "s"]);
-          v.push([be + "d", ae + "ed"]);                      // catalogued / cataloged
-          v.push([be.slice(0, -1) + "ing", ae + "ing"]);     // cataloguing / cataloging
+          v.push([be + "d", ae + "ed"]); // catalogued / cataloged
+          v.push([be.slice(0, -1) + "ing", ae + "ing"]); // cataloguing / cataloging
         }
 
         return v;
@@ -1174,10 +1178,15 @@
             "gi",
           );
           rules.push({
-            wrong: be, right: ae, romRight: ae,
-            origin: "be-ae", pattern,
-            italic: false, italicOnly: false,
-            isDefault: false, hasAlternate: false,
+            wrong: be,
+            right: ae,
+            romRight: ae,
+            origin: "be-ae",
+            pattern,
+            italic: false,
+            italicOnly: false,
+            isDefault: false,
+            hasAlternate: false,
           });
         }
 
@@ -1231,7 +1240,14 @@
          *   guide lists e.g. "Māyā / Maya (as personality)" BEFORE
          *   "māyā / maya (default)".
          */
-        function tryAdd(wrong, right, origin, italic, isDefault = false, romRight = null) {
+        function tryAdd(
+          wrong,
+          right,
+          origin,
+          italic,
+          isDefault = false,
+          romRight = null,
+        ) {
           wrong = wrong.trim().normalize("NFC");
           right = right.trim().normalize("NFC");
           if (!wrong || !right) return;
@@ -1263,12 +1279,13 @@
             }
           }
 
-          // Normalise spaces to [ \t\u00A0]+ so multi-word phrases match regardless
-          // of whether the XLSX used regular, non-breaking, or multiple spaces.
-          const escapedWrong = escapeRegex(wrong).replace(
-            / /g,
-            "[ \\t\\u00A0]+",
-          );
+          // Normalise spaces to [ \t\u00A0]+ and hyphens to [-\s]+ so that
+          // compound IAST terms match regardless of whether the input uses
+          // hyphens, spaces, or a mix (e.g. "Sukha-Pūrvaka Prāṇāyāma" matches
+          // the guide entry "sukha-pūrvaka-prāṇāyāma").
+          const escapedWrong = escapeRegex(wrong)
+            .replace(/ /g, "[ \\t\\u00A0]+")
+            .replace(/-/g, "[-\\s]+");
           const pattern = new RegExp(
             `(?<![${LETTER_CHARS}])${escapedWrong}(?![${LETTER_CHARS}])`,
             "gi",
@@ -1358,13 +1375,27 @@
 
             const dropped = generateDroppedAVariant(iastForm, romForm);
             if (dropped)
-              tryAdd(dropped[1], dropped[0], "dropped-a", italic, isDefault, romForm);
+              tryAdd(
+                dropped[1],
+                dropped[0],
+                "dropped-a",
+                italic,
+                isDefault,
+                romForm,
+              );
 
             for (const [vIast, vRom] of generateCompoundVariants(
               iastForm,
               romForm,
             ))
-              tryAdd(vRom, vIast, "compound-variant", italic, isDefault, romForm);
+              tryAdd(
+                vRom,
+                vIast,
+                "compound-variant",
+                italic,
+                isDefault,
+                romForm,
+              );
 
             for (const [vIast, vRom] of generateVowelVariants(
               iastForm,
@@ -1386,7 +1417,14 @@
             // already containing correct IAST characters (e.g. "ṛṣis") is still
             // wrapped in <em>/\textit{} / _..._ — the rom-form rule won't match it.
             if (iastForm !== romForm)
-              tryAdd(iastForm, iastForm, "italic-only", italic, isDefault, romForm);
+              tryAdd(
+                iastForm,
+                iastForm,
+                "italic-only",
+                italic,
+                isDefault,
+                romForm,
+              );
           }
         }
 
@@ -1569,8 +1607,15 @@
             // \textit{} (where wrapItalicLatex is suppressed).
             // In romanized mode, keep all no-change candidates so we can show a
             // "found in guide" mark — the user needs to know the term was recognised.
-            const hasItalicEffect = latexMode ? wrapItalicLatex : wrapItalicHtml;
-            if (matched === newSpelling && !hasItalicEffect && !rule.protect && !romanizedMode)
+            const hasItalicEffect = latexMode
+              ? wrapItalicLatex
+              : wrapItalicHtml;
+            if (
+              matched === newSpelling &&
+              !hasItalicEffect &&
+              !rule.protect &&
+              !romanizedMode
+            )
               continue;
 
             candidates.push({
@@ -1678,8 +1723,15 @@
 
         let plain = line;
         for (let i = kept.length - 1; i >= 0; i--) {
-          const { start, end, matched, newSpelling, wrapItalicLatex, wrapItalicRom, rule } =
-            kept[i];
+          const {
+            start,
+            end,
+            matched,
+            newSpelling,
+            wrapItalicLatex,
+            wrapItalicRom,
+            rule,
+          } = kept[i];
           if (rule.protect) {
             // Apply casing correction if the canonical form differs from input.
             // Never add \textit{} / _..._ wrapping for protect entries.
@@ -1690,8 +1742,8 @@
           const plainOut = wrapItalicLatex
             ? `\\textit{${newSpelling}}`
             : wrapItalicRom
-            ? `_${newSpelling}_`
-            : newSpelling;
+              ? `_${newSpelling}_`
+              : newSpelling;
           plain = plain.slice(0, start) + plainOut + plain.slice(end);
         }
 
@@ -1703,27 +1755,44 @@
         // In LaTeX mode use wrapItalicLatex — wrapItalicHtml is always true for
         // italic rules and would falsely flag text already inside \textit{}.
         const changedWords = kept
-          .filter((k) => k.matched !== k.newSpelling ||
-            (latexMode ? k.wrapItalicLatex : romanizedMode ? k.wrapItalicRom : k.wrapItalicHtml))
+          .filter(
+            (k) =>
+              k.matched !== k.newSpelling ||
+              (latexMode
+                ? k.wrapItalicLatex
+                : romanizedMode
+                  ? k.wrapItalicRom
+                  : k.wrapItalicHtml),
+          )
           .map((k) => ({
             from: k.matched,
             to: k.newSpelling,
-            italic: latexMode ? k.wrapItalicLatex : romanizedMode ? k.wrapItalicRom : k.wrapItalicHtml,
+            italic: latexMode
+              ? k.wrapItalicLatex
+              : romanizedMode
+                ? k.wrapItalicRom
+                : k.wrapItalicHtml,
             origin: k.rule?.origin ?? "",
           }));
 
         // Count actual changes: text changed OR italic effect applied (not mere "found" passthroughs).
         const changeCount = kept.filter((k) => {
           if (k.rule.protect) return k.matched !== k.newSpelling; // protect: only casing corrections
-          const hasItalic = latexMode ? k.wrapItalicLatex : (romanizedMode ? k.wrapItalicRom : k.wrapItalicHtml);
+          const hasItalic = latexMode
+            ? k.wrapItalicLatex
+            : romanizedMode
+              ? k.wrapItalicRom
+              : k.wrapItalicHtml;
           return k.matched !== k.newSpelling || hasItalic;
         }).length;
 
         // Count terms recognised in the guide but already correctly spelled (romanized mode only).
-        const foundInGuide = romanizedMode ? kept.filter((k) => {
-          if (k.rule.protect) return k.matched === k.newSpelling;
-          return k.matched === k.newSpelling && !k.wrapItalicRom;
-        }).length : 0;
+        const foundInGuide = romanizedMode
+          ? kept.filter((k) => {
+              if (k.rule.protect) return k.matched === k.newSpelling;
+              return k.matched === k.newSpelling && !k.wrapItalicRom;
+            }).length
+          : 0;
 
         // Count BE→AE spelling changes (subset of changeCount).
         const beAeCount = kept.filter(
@@ -1912,7 +1981,14 @@
       // Process full text
       // ---------------------------------------------------------------------------
 
-      function processText(text, replacements, latexMode, knownTerms, romanizedMode = false, beAeMode = false) {
+      function processText(
+        text,
+        replacements,
+        latexMode,
+        knownTerms,
+        romanizedMode = false,
+        beAeMode = false,
+      ) {
         // Normalise to NFC so that copy-pasted text with NFD diacritics
         // (e.g. ṛ as r + combining dot, common from word processors / web pages)
         // matches the NFC patterns built from the XLSX.
@@ -1927,8 +2003,22 @@
         const changedMap = new Map(); // to.toLowerCase() → {from, to}
 
         for (const line of lines) {
-          let { plain, html, count, foundInGuide, beAeCount, unknowns, changedWords } =
-            applyReplacementsToLine(line, replacements, latexMode, knownTerms, romanizedMode, beAeMode);
+          let {
+            plain,
+            html,
+            count,
+            foundInGuide,
+            beAeCount,
+            unknowns,
+            changedWords,
+          } = applyReplacementsToLine(
+            line,
+            replacements,
+            latexMode,
+            knownTerms,
+            romanizedMode,
+            beAeMode,
+          );
           if (latexMode) {
             const eq = applyEnquoteToLine(plain, html);
             plain = eq.plain;
@@ -2014,7 +2104,8 @@
 
           // Merge IAST + BE→AE rules into one sorted array (longer matches first)
           replacements = [...result.replacements, ...beAeRules].sort(
-            (a, b) => b.wrong.length - a.wrong.length || a.wrong.localeCompare(b.wrong),
+            (a, b) =>
+              b.wrong.length - a.wrong.length || a.wrong.localeCompare(b.wrong),
           );
 
           const aeNote = beAeRulesCount
@@ -2063,8 +2154,22 @@
         const latexMode = latexToggle.checked;
         const romanizedMode = romanizedToggle.checked;
         const beAeMode = beAeToggle.checked;
-        const { plain, html, totalChanges, totalFound, totalBEAE, unknowns, changedWords } =
-          processText(input, replacements, latexMode, knownTerms, romanizedMode, beAeMode);
+        const {
+          plain,
+          html,
+          totalChanges,
+          totalFound,
+          totalBEAE,
+          unknowns,
+          changedWords,
+        } = processText(
+          input,
+          replacements,
+          latexMode,
+          knownTerms,
+          romanizedMode,
+          beAeMode,
+        );
 
         outputEl.innerHTML = html;
         outputEl._plain = plain;
