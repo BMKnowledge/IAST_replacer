@@ -1592,7 +1592,12 @@
         knownTerms,
         romanizedMode = false,
         beAeMode = false,
+        inputItalicRanges = [],
       ) {
+        // Helper: was this match entirely inside a region the user pre-italicised?
+        const wasInputItalic = (start, end) =>
+          inputItalicRanges.some(([s, e]) => start >= s && end <= e);
+
         // Pre-compute which character ranges are already inside an italic command
         // so we never double-wrap on repeated runs (idempotency).
         const italicSpans = latexMode ? findItalicContentSpans(line) : [];
@@ -1759,9 +1764,17 @@
               }
             } else {
               const cls = rule.hasAlternate ? ' class="alternate"' : "";
-              // In romanized mode, a no-change non-protect candidate means the term is
-              // already in the canonical romanized form — show it as "found in guide".
-              if (romanizedMode && matched === newSpelling && !wrapItalicHtml) {
+              // No-op italic match inside text the user already italicised:
+              // render as plain <em> with no <mark> — there is no real change to flag.
+              const noopItalic =
+                matched === newSpelling &&
+                wrapItalicHtml &&
+                wasInputItalic(ev.start, ev.end);
+              if (noopItalic) {
+                htmlResult += `<em>${escapeHtml(newSpelling)}</em>`;
+              } else if (romanizedMode && matched === newSpelling && !wrapItalicHtml) {
+                // In romanized mode, a no-change non-protect candidate means the term is
+                // already in the canonical romanized form — show it as "found in guide".
                 htmlResult += `<mark class="found">${escapeHtml(matched)}</mark>`;
               } else if (latexMode && wrapItalicLatex) {
                 htmlResult += `<mark${cls}>${escapeHtml(`\\textit{${newSpelling}}`)}</mark>`;
@@ -1810,15 +1823,21 @@
         // In LaTeX mode use wrapItalicLatex — wrapItalicHtml is always true for
         // italic rules and would falsely flag text already inside \textit{}.
         const changedWords = kept
-          .filter(
-            (k) =>
-              k.matched !== k.newSpelling ||
-              (latexMode
-                ? k.wrapItalicLatex
-                : romanizedMode
-                  ? k.wrapItalicRom
-                  : k.wrapItalicHtml),
-          )
+          .filter((k) => {
+            const hasItalic = latexMode
+              ? k.wrapItalicLatex
+              : romanizedMode
+                ? k.wrapItalicRom
+                : k.wrapItalicHtml;
+            // Suppress: no real text change AND the user already had it italic
+            if (
+              k.matched === k.newSpelling &&
+              hasItalic &&
+              wasInputItalic(k.start, k.end)
+            )
+              return false;
+            return k.matched !== k.newSpelling || hasItalic;
+          })
           .map((k) => ({
             from: k.matched,
             to: k.newSpelling,
@@ -1838,6 +1857,13 @@
             : romanizedMode
               ? k.wrapItalicRom
               : k.wrapItalicHtml;
+          // Suppress count: italic-only effect on text the user already italicised
+          if (
+            k.matched === k.newSpelling &&
+            hasItalic &&
+            wasInputItalic(k.start, k.end)
+          )
+            return false;
           return k.matched !== k.newSpelling || hasItalic;
         }).length;
 
@@ -2050,11 +2076,17 @@
         knownTerms,
         romanizedMode = false,
         beAeMode = false,
+        inputItalicRanges = [],
       ) {
         // Normalise to NFC so that copy-pasted text with NFD diacritics
         // (e.g. ṛ as r + combining dot, common from word processors / web pages)
         // matches the NFC patterns built from the XLSX.
-        const lines = text.normalize("NFC").split("\n");
+        const normalized = text.normalize("NFC");
+        const lines = normalized.split("\n");
+        const perLineItalicRanges = splitItalicRangesByLines(
+          normalized,
+          inputItalicRanges,
+        );
         const plainLines = [];
         const htmlLines = [];
         let totalChanges = 0;
@@ -2064,7 +2096,8 @@
         // Keyed by lowercased output form so the same term only appears once.
         const changedMap = new Map(); // to.toLowerCase() → {from, to}
 
-        for (const line of lines) {
+        for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
+          const line = lines[lineIdx];
           let {
             plain,
             html,
@@ -2080,6 +2113,7 @@
             knownTerms,
             romanizedMode,
             beAeMode,
+            perLineItalicRanges[lineIdx] ?? [],
           );
           if (latexMode) {
             const eq = applyEnquoteToLine(plain, html);
@@ -2120,23 +2154,71 @@
       // ---------------------------------------------------------------------------
 
       /**
-       * Extract plain text from the contenteditable input div.
-       * Block-level elements (div, p) and <br> are collapsed to newlines.
-       * Italic elements (<em>, <i>) are read as plain text — their visual italic
-       * is shown in the input box but is not encoded in the extracted string.
+       * Extract plain text from the contenteditable input div, along with
+       * character ranges that were inside <em>/<i> in the input. The ranges
+       * let the engine recognise text that the user already had in italics
+       * and avoid marking a term as "corrected" when the only effect would
+       * be wrapping it in italics (e.g. input had _Kṛṣṇa_ and output is
+       * _Kṛṣṇa_ — same text, same italic, no real change).
+       *
+       * Returns { text, italicRanges }. italicRanges is sorted, merged
+       * [start, end] pairs in the joined plain text.
        */
-      function getInputPlainText(el) {
-        function walk(node) {
-          if (node.nodeType === Node.TEXT_NODE) return node.textContent;
+      function getInputContent(el) {
+        const parts = [];
+        const ranges = [];
+        let pos = 0;
+        function walk(node, italicDepth) {
+          if (node.nodeType === Node.TEXT_NODE) {
+            const t = node.textContent;
+            if (italicDepth > 0 && t.length > 0) ranges.push([pos, pos + t.length]);
+            parts.push(t);
+            pos += t.length;
+            return;
+          }
           const tag = node.nodeName;
-          if (tag === "BR") return "\n";
-          const inner = Array.from(node.childNodes).map(walk).join("");
-          if (tag === "DIV" || tag === "P") return inner + "\n";
-          return inner; // em, i, span, b, strong, etc. — just their text
+          if (tag === "BR") { parts.push("\n"); pos += 1; return; }
+          const isItalic = tag === "EM" || tag === "I";
+          const isBlock = tag === "DIV" || tag === "P";
+          Array.from(node.childNodes).forEach((c) => walk(c, italicDepth + (isItalic ? 1 : 0)));
+          if (isBlock) { parts.push("\n"); pos += 1; }
         }
-        const raw = Array.from(el.childNodes).map(walk).join("");
-        // Remove the single trailing newline that a final block element adds.
-        return raw.endsWith("\n") ? raw.slice(0, -1) : raw;
+        Array.from(el.childNodes).forEach((c) => walk(c, 0));
+        let text = parts.join("");
+        if (text.endsWith("\n")) text = text.slice(0, -1);
+        // Sort + merge adjacent/overlapping ranges
+        ranges.sort((a, b) => a[0] - b[0]);
+        const merged = [];
+        for (const r of ranges) {
+          if (merged.length && r[0] <= merged[merged.length - 1][1]) {
+            merged[merged.length - 1][1] = Math.max(merged[merged.length - 1][1], r[1]);
+          } else {
+            merged.push([r[0], r[1]]);
+          }
+        }
+        return { text, italicRanges: merged };
+      }
+
+      /**
+       * Slice global italic ranges into per-line ranges with line-local offsets.
+       * Mirrors the line splitting in processText (split on "\n").
+       */
+      function splitItalicRangesByLines(text, ranges) {
+        const lines = text.split("\n");
+        const result = [];
+        let lineStart = 0;
+        for (const line of lines) {
+          const lineEnd = lineStart + line.length;
+          const lr = [];
+          for (const [s, e] of ranges) {
+            const os = Math.max(s, lineStart);
+            const oe = Math.min(e, lineEnd);
+            if (os < oe) lr.push([os - lineStart, oe - lineStart]);
+          }
+          result.push(lr);
+          lineStart = lineEnd + 1; // +1 for the "\n" separator
+        }
+        return result;
       }
 
       /**
@@ -2262,7 +2344,7 @@
 
       convertBtn.addEventListener("click", () => {
         if (!replacements) return;
-        const input = getInputPlainText(inputEl);
+        const { text: input, italicRanges } = getInputContent(inputEl);
         if (!input.trim()) {
           outputEl.textContent = "";
           outputMeta.innerHTML = "";
@@ -2291,6 +2373,7 @@
           knownTerms,
           romanizedMode,
           beAeMode,
+          italicRanges,
         );
 
         outputEl.innerHTML = html;
