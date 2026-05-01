@@ -237,9 +237,9 @@
         color: var(--c-text-muted);
       }
 
-      textarea {
+      textarea,
+      #input-text[contenteditable] {
         width: 100%;
-        height: 480px;
         padding: 14px 16px;
         border: 1px solid var(--c-border-input);
         border-radius: 6px;
@@ -248,7 +248,6 @@
         font-size: 0.9375rem;
         line-height: 1.7;
         color: var(--c-text-input);
-        resize: vertical;
         outline: none;
         transition:
           border-color 0.15s,
@@ -256,7 +255,22 @@
           color 0.2s;
       }
 
-      textarea:focus {
+      textarea {
+        height: 480px;
+        resize: vertical;
+      }
+
+      #input-text[contenteditable] {
+        min-height: 480px;
+        max-height: 480px;
+        overflow-y: auto;
+        white-space: pre-wrap;
+        word-wrap: break-word;
+        cursor: text;
+      }
+
+      textarea:focus,
+      #input-text[contenteditable]:focus {
         border-color: var(--c-focus);
       }
       textarea[readonly] {
@@ -266,6 +280,14 @@
       }
       textarea::placeholder {
         color: var(--c-placeholder);
+      }
+
+      /* Placeholder for the contenteditable input */
+      #input-text[contenteditable]:empty::before {
+        content: attr(data-placeholder);
+        color: var(--c-placeholder);
+        pointer-events: none;
+        white-space: pre-wrap;
       }
 
       .controls {
@@ -596,10 +618,14 @@
     <main>
       <div class="panel">
         <label for="input-text">Input text</label>
-        <textarea
+        <div
           id="input-text"
-          placeholder="Paste your text here…&#10;&#10;e.g. Krishna teaches Arjuna about dharma and karma in the Bhagavad Gita."
-        ></textarea>
+          contenteditable="true"
+          spellcheck="false"
+          role="textbox"
+          aria-multiline="true"
+          data-placeholder="Paste your text here…&#10;&#10;e.g. Krishna teaches Arjuna about dharma and karma in the Bhagavad Gita."
+        ></div>
       </div>
 
       <div class="controls">
@@ -1283,9 +1309,10 @@
           // compound IAST terms match regardless of whether the input uses
           // hyphens, spaces, or a mix (e.g. "Sukha-Pūrvaka Prāṇāyāma" matches
           // the guide entry "sukha-pūrvaka-prāṇāyāma").
-          const escapedWrong = escapeRegex(wrong)
-            .replace(/ /g, "[ \\t\\u00A0]+")
-            .replace(/-/g, "[-\\s]+");
+          // Both spaces and hyphens collapse to [-\s]+ so that compound terms
+          // match regardless of whether the input uses hyphens, spaces, or a
+          // mix in either direction (guide "Garga Muni" ↔ input "Garga-muni").
+          const escapedWrong = escapeRegex(wrong).replace(/[- ]/g, "[-\\s]+");
           const pattern = new RegExp(
             `(?<![${LETTER_CHARS}])${escapedWrong}(?![${LETTER_CHARS}])`,
             "gi",
@@ -1976,6 +2003,8 @@
           });
         }
         newCode = _eqRestoreRegions(newCode, regPlain);
+        // American convention: move trailing period/comma inside \enquote{}.
+        newCode = newCode.replace(/\\enquote\{([^}]*)}\s*([.,])/g, "\\enquote{$1$2}");
 
         if (count === 0) return { plain, html, count: 0 };
 
@@ -2000,6 +2029,11 @@
           });
         }
         newHtmlCode = _eqRestoreRegions(newHtmlCode, regHtml);
+        // Mirror the same punctuation-inside rule for the HTML preview.
+        newHtmlCode = newHtmlCode.replace(
+          /<mark>(\\enquote\{[^}]*)}<\/mark>\s*([.,])/g,
+          "<mark>$1$2}</mark>",
+        );
         const newHtml = newHtmlCode + htmlComment;
 
         return { plain: newPlain, html: newHtml, count };
@@ -2079,6 +2113,66 @@
           unknowns: [...allUnknowns].sort(),
           changedWords,
         };
+      }
+
+      // ---------------------------------------------------------------------------
+      // Rich-text input helpers
+      // ---------------------------------------------------------------------------
+
+      /**
+       * Extract plain text from the contenteditable input div.
+       * Block-level elements (div, p) and <br> are collapsed to newlines.
+       * Italic elements (<em>, <i>) are read as plain text — their visual italic
+       * is shown in the input box but is not encoded in the extracted string.
+       */
+      function getInputPlainText(el) {
+        function walk(node) {
+          if (node.nodeType === Node.TEXT_NODE) return node.textContent;
+          const tag = node.nodeName;
+          if (tag === "BR") return "\n";
+          const inner = Array.from(node.childNodes).map(walk).join("");
+          if (tag === "DIV" || tag === "P") return inner + "\n";
+          return inner; // em, i, span, b, strong, etc. — just their text
+        }
+        const raw = Array.from(el.childNodes).map(walk).join("");
+        // Remove the single trailing newline that a final block element adds.
+        return raw.endsWith("\n") ? raw.slice(0, -1) : raw;
+      }
+
+      /**
+       * Convert clipboard HTML to a clean fragment that keeps only italic
+       * formatting (<em>) and newlines — all other markup is stripped.
+       * Returns an HTML string safe to pass to execCommand("insertHTML").
+       */
+      function cleanPastedHtml(html) {
+        const doc = new DOMParser().parseFromString(html, "text/html");
+        const BLOCK_TAGS = new Set([
+          "P","DIV","H1","H2","H3","H4","H5","H6",
+          "LI","BLOCKQUOTE","TR","SECTION","ARTICLE",
+        ]);
+        function convert(node) {
+          if (node.nodeType === Node.TEXT_NODE) {
+            return document.createTextNode(node.textContent);
+          }
+          const tag = node.nodeName;
+          if (tag === "EM" || tag === "I") {
+            const em = document.createElement("em");
+            Array.from(node.childNodes).forEach((c) => em.appendChild(convert(c)));
+            return em;
+          }
+          if (tag === "BR") return document.createElement("br");
+          const frag = document.createDocumentFragment();
+          Array.from(node.childNodes).forEach((c) => frag.appendChild(convert(c)));
+          if (BLOCK_TAGS.has(tag)) frag.appendChild(document.createElement("br"));
+          return frag;
+        }
+        const frag = document.createDocumentFragment();
+        Array.from(doc.body.childNodes).forEach((c) => frag.appendChild(convert(c)));
+        const wrapper = document.createElement("div");
+        wrapper.appendChild(frag);
+        // Trim trailing <br> elements added for the last block
+        while (wrapper.lastChild?.nodeName === "BR") wrapper.lastChild.remove();
+        return wrapper.innerHTML;
       }
 
       // ---------------------------------------------------------------------------
@@ -2168,7 +2262,7 @@
 
       convertBtn.addEventListener("click", () => {
         if (!replacements) return;
-        const input = inputEl.value;
+        const input = getInputPlainText(inputEl);
         if (!input.trim()) {
           outputEl.textContent = "";
           outputMeta.innerHTML = "";
@@ -2321,6 +2415,20 @@
       // Also allow Ctrl/Cmd+Enter to convert
       inputEl.addEventListener("keydown", (e) => {
         if ((e.ctrlKey || e.metaKey) && e.key === "Enter") convertBtn.click();
+      });
+
+      // On paste: strip all HTML formatting except italic (<em>/<i>).
+      // This lets the input box show italic text visually when the user
+      // copies rich text (e.g. from Word or a web page).
+      inputEl.addEventListener("paste", (e) => {
+        e.preventDefault();
+        const html = e.clipboardData.getData("text/html");
+        const text = e.clipboardData.getData("text/plain");
+        if (html) {
+          document.execCommand("insertHTML", false, cleanPastedHtml(html));
+        } else {
+          document.execCommand("insertText", false, text);
+        }
       });
 
       // ── Dark mode toggle ─────────────────────────────────────────────────────
