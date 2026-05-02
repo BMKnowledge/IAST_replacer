@@ -1542,12 +1542,14 @@
         ) {
           return replacement.toUpperCase();
         }
-        // Sentence-initial capital
-        if (
-          sentenceStart &&
-          original[0] === original[0].toUpperCase() &&
-          original[0] !== original[0].toLowerCase()
-        ) {
+        // Capitalise the output when the matched text itself starts with an
+        // uppercase letter (e.g. "Bhakti" after a quote) OR we're at a
+        // sentence start and the user happened to type lowercase (e.g.
+        // "bhakti" at position 0 still gets "Bhakti" in the output).
+        // The `!== toLowerCase()` guard ensures the first char is actually
+        // an alphabetic letter, not a digit or punctuation.
+        const firstIsUpper = original[0] !== original[0].toLowerCase();
+        if (sentenceStart || firstIsUpper) {
           return replacement[0].toUpperCase() + replacement.slice(1);
         }
         return replacement;
