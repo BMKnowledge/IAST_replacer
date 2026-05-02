@@ -696,7 +696,7 @@
       // ---------------------------------------------------------------------------
 
       async function loadXLSX(url) {
-        const res = await fetch(url);
+        const res = await fetch(url, { cache: "no-cache" });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const buf = await res.arrayBuffer();
         const zip = await JSZip.loadAsync(buf);
@@ -819,7 +819,7 @@
       // ---------------------------------------------------------------------------
 
       async function loadBEAEXLSX(url) {
-        const res = await fetch(url);
+        const res = await fetch(url, { cache: "no-cache" });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const buf = await res.arrayBuffer();
         const zip = await JSZip.loadAsync(buf);
