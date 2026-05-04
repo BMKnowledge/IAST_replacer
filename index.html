@@ -1667,19 +1667,13 @@
             // wrapItalicHtml is always true for italic rules regardless of context,
             // so using it here would create false candidates for text already inside
             // \textit{} (where wrapItalicLatex is suppressed).
-            // In default and romanized modes, keep all no-change candidates so we
-            // can show a "found in guide" mark — the user needs to know the term
-            // was recognised. LaTeX mode skips them (output is LaTeX source).
+            // Keep all no-change candidates in every mode so we can show a
+            // "found in guide" (blue) mark — the user needs to know the term
+            // was recognised. In LaTeX mode the mark is HTML-only and does not
+            // appear in the copyable LaTeX output.
             const hasItalicEffect = latexMode
               ? wrapItalicLatex
               : wrapItalicHtml;
-            if (
-              matched === newSpelling &&
-              !hasItalicEffect &&
-              !rule.protect &&
-              latexMode
-            )
-              continue;
 
             candidates.push({
               start,
@@ -1757,11 +1751,7 @@
               // In romanized mode, show a "found in guide" mark even for no-change matches
               // so the user can see the term was recognised.
               if (matched === newSpelling) {
-                if (!latexMode) {
-                  htmlResult += `<mark class="found">${escapeHtml(matched)}</mark>`;
-                } else {
-                  htmlResult += escapeHtml(line.slice(ev.start, ev.end));
-                }
+                htmlResult += `<mark class="found">${escapeHtml(matched)}</mark>`;
               } else {
                 htmlResult += `<mark>${escapeHtml(newSpelling)}</mark>`;
               }
@@ -1775,9 +1765,13 @@
                 wasInputItalic(ev.start, ev.end);
               if (noopItalic) {
                 htmlResult += `<mark class="found"><em>${escapeHtml(newSpelling)}</em></mark>`;
-              } else if (!latexMode && matched === newSpelling && !wrapItalicHtml) {
+              } else if (
+                matched === newSpelling &&
+                (latexMode ? !wrapItalicLatex : !wrapItalicHtml)
+              ) {
                 // No-change non-protect candidate: the term is already in the
-                // canonical form — show it as "found in guide" (blue mark).
+                // canonical form (and no italic command is being added) — show it
+                // as "found in guide" (blue mark).
                 htmlResult += `<mark class="found">${escapeHtml(matched)}</mark>`;
               } else if (latexMode && wrapItalicLatex) {
                 htmlResult += `<mark${cls}>${escapeHtml(`\\textit{${newSpelling}}`)}</mark>`;
@@ -1872,16 +1866,18 @@
 
         // Count terms recognised in the guide but already correctly spelled
         // (default and romanized modes — LaTeX mode skips these).
-        const foundInGuide = latexMode
-          ? 0
-          : kept.filter((k) => {
-              if (k.rule.protect) return k.matched === k.newSpelling;
-              const itFlag = romanizedMode ? k.wrapItalicRom : k.wrapItalicHtml;
-              if (k.matched !== k.newSpelling) return false;
-              // No italic effect needed → already correct.
-              // Italic effect needed AND text was already italic in input → already correct.
-              return !itFlag || wasInputItalic(k.start, k.end);
-            }).length;
+        const foundInGuide = kept.filter((k) => {
+          if (k.rule.protect) return k.matched === k.newSpelling;
+          const itFlag = latexMode
+            ? k.wrapItalicLatex
+            : romanizedMode
+              ? k.wrapItalicRom
+              : k.wrapItalicHtml;
+          if (k.matched !== k.newSpelling) return false;
+          // No italic effect being added → already correct.
+          // Italic effect being added AND text was already italic in input → already correct.
+          return !itFlag || wasInputItalic(k.start, k.end);
+        }).length;
 
         // Count BE→AE spelling changes (subset of changeCount).
         const beAeCount = kept.filter(
@@ -2410,7 +2406,7 @@
           } else {
             metaHtml = `<span>${totalChanges}</span> replacement${totalChanges === 1 ? "" : "s"} made`;
           }
-          if (!latexMode && totalFound > 0) {
+          if (totalFound > 0) {
             metaHtml += `, <span style="color:var(--c-mark-found-fg)">${totalFound}</span> already correct`;
           }
           metaHtml += modeNote;
