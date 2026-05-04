@@ -1667,8 +1667,9 @@
             // wrapItalicHtml is always true for italic rules regardless of context,
             // so using it here would create false candidates for text already inside
             // \textit{} (where wrapItalicLatex is suppressed).
-            // In romanized mode, keep all no-change candidates so we can show a
-            // "found in guide" mark — the user needs to know the term was recognised.
+            // In default and romanized modes, keep all no-change candidates so we
+            // can show a "found in guide" mark — the user needs to know the term
+            // was recognised. LaTeX mode skips them (output is LaTeX source).
             const hasItalicEffect = latexMode
               ? wrapItalicLatex
               : wrapItalicHtml;
@@ -1676,7 +1677,7 @@
               matched === newSpelling &&
               !hasItalicEffect &&
               !rule.protect &&
-              !romanizedMode
+              latexMode
             )
               continue;
 
@@ -1756,7 +1757,7 @@
               // In romanized mode, show a "found in guide" mark even for no-change matches
               // so the user can see the term was recognised.
               if (matched === newSpelling) {
-                if (romanizedMode) {
+                if (!latexMode) {
                   htmlResult += `<mark class="found">${escapeHtml(matched)}</mark>`;
                 } else {
                   htmlResult += escapeHtml(line.slice(ev.start, ev.end));
@@ -1773,10 +1774,10 @@
                 wrapItalicHtml &&
                 wasInputItalic(ev.start, ev.end);
               if (noopItalic) {
-                htmlResult += `<em>${escapeHtml(newSpelling)}</em>`;
-              } else if (romanizedMode && matched === newSpelling && !wrapItalicHtml) {
-                // In romanized mode, a no-change non-protect candidate means the term is
-                // already in the canonical romanized form — show it as "found in guide".
+                htmlResult += `<mark class="found"><em>${escapeHtml(newSpelling)}</em></mark>`;
+              } else if (!latexMode && matched === newSpelling && !wrapItalicHtml) {
+                // No-change non-protect candidate: the term is already in the
+                // canonical form — show it as "found in guide" (blue mark).
                 htmlResult += `<mark class="found">${escapeHtml(matched)}</mark>`;
               } else if (latexMode && wrapItalicLatex) {
                 htmlResult += `<mark${cls}>${escapeHtml(`\\textit{${newSpelling}}`)}</mark>`;
@@ -1869,13 +1870,18 @@
           return k.matched !== k.newSpelling || hasItalic;
         }).length;
 
-        // Count terms recognised in the guide but already correctly spelled (romanized mode only).
-        const foundInGuide = romanizedMode
-          ? kept.filter((k) => {
+        // Count terms recognised in the guide but already correctly spelled
+        // (default and romanized modes — LaTeX mode skips these).
+        const foundInGuide = latexMode
+          ? 0
+          : kept.filter((k) => {
               if (k.rule.protect) return k.matched === k.newSpelling;
-              return k.matched === k.newSpelling && !k.wrapItalicRom;
-            }).length
-          : 0;
+              const itFlag = romanizedMode ? k.wrapItalicRom : k.wrapItalicHtml;
+              if (k.matched !== k.newSpelling) return false;
+              // No italic effect needed → already correct.
+              // Italic effect needed AND text was already italic in input → already correct.
+              return !itFlag || wasInputItalic(k.start, k.end);
+            }).length;
 
         // Count BE→AE spelling changes (subset of changeCount).
         const beAeCount = kept.filter(
@@ -2404,7 +2410,7 @@
           } else {
             metaHtml = `<span>${totalChanges}</span> replacement${totalChanges === 1 ? "" : "s"} made`;
           }
-          if (romanizedMode && totalFound > 0) {
+          if (!latexMode && totalFound > 0) {
             metaHtml += `, <span style="color:var(--c-mark-found-fg)">${totalFound}</span> already correct`;
           }
           metaHtml += modeNote;
