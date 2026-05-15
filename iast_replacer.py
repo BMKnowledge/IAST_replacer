@@ -22,9 +22,16 @@ import argparse
 import csv
 import re
 import sys
+import unicodedata
 import uuid
 from pathlib import Path
 from dataclasses import dataclass, field
+
+
+def _nfc(s: str) -> str:
+    """Normalize to NFC. Mirrors text.normalize('NFC') in the JS so input
+    with combining diacritics (NFD) matches NFC patterns built from the guide."""
+    return unicodedata.normalize("NFC", s) if s else s
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -84,8 +91,12 @@ ITALIC_COMMAND_RE = re.compile(
 class Replacement:
     wrong: str
     right: str
-    origin: str       # "direct" | "paren-expansion" | "dropped-a" | ...
+    origin: str       # "direct" | "paren-expansion" | "dropped-a" | "protect" | ...
     source_row: int
+    italic: bool = field(default=False)          # True if rule wraps in \textit{}
+    is_default: bool = field(default=False)      # True if row was tagged "default"
+    has_alternate: bool = field(default=False)   # True if rule won an eviction race
+    protect: bool = field(default=False)         # True for protect placeholder rules
     pattern: re.Pattern = field(init=False, repr=False)
     case_sensitive: bool = field(init=False, repr=False)
     ambiguous: bool = field(default=False)       # True when rom → multiple distinct IAST
@@ -98,9 +109,18 @@ class Replacement:
         # and vice versa.
         self.case_sensitive = False
 
+        # NFC-normalise so rules built from the guide match NFC-normalised input.
+        self.wrong = _nfc(self.wrong)
+        self.right = _nfc(self.right)
+
+        # Make hyphens and spaces interchangeable inside the matched word so
+        # "Yoga māyā" also catches "Yoga-māyā" / "Yoga  māyā" / "Yoga\tmāyā".
+        # re.escape() escapes both ' ' and '-' as '\\ ' / '\\-'.
+        escaped = re.escape(self.wrong)
+        escaped = escaped.replace("\\ ", r"[-\s]+").replace("\\-", r"[-\s]+")
         pattern_str = (
             f"(?<![{LETTER_CHARS}])"
-            f"{re.escape(self.wrong)}"
+            f"{escaped}"
             f"(?![{LETTER_CHARS}])"
         )
         self.pattern = re.compile(pattern_str, re.IGNORECASE)
@@ -142,6 +162,170 @@ def load_from_csv(csv_path):
         reader = csv.DictReader(f)
         for row in reader:
             rows.append(row)
+    return rows
+
+
+# --- XLSX loader ----------------------------------------------------------
+# Mirrors loadXLSX/parseXfItalics/parseSharedStrings/parseWorksheet in
+# index.html so the Python tool reads the same IAST.xlsx the web UI uses.
+# Uses only stdlib (zipfile + ElementTree) — no openpyxl dependency.
+
+import zipfile
+import xml.etree.ElementTree as _ET
+
+_SS_NS = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
+
+
+def _xlsx_parse_shared_strings(xml_str):
+    if not xml_str:
+        return []
+    root = _ET.fromstring(xml_str)
+    out = []
+    for si in root.findall(f"{_SS_NS}si"):
+        # Concatenate all <t> descendants (handles rich text runs).
+        out.append("".join(t.text or "" for t in si.iter(f"{_SS_NS}t")))
+    return out
+
+
+def _xlsx_parse_xf_italics(xml_str):
+    """Parse xl/styles.xml; return list[bool] where italics[i] is True if
+    cellXfs[i] -> font[fontId] has <i/>."""
+    if not xml_str:
+        return []
+    root = _ET.fromstring(xml_str)
+    fonts_el = root.find(f"{_SS_NS}fonts")
+    font_italic = []
+    if fonts_el is not None:
+        for f in fonts_el.findall(f"{_SS_NS}font"):
+            font_italic.append(f.find(f"{_SS_NS}i") is not None)
+    cellxfs = root.find(f"{_SS_NS}cellXfs")
+    out = []
+    if cellxfs is not None:
+        for xf in cellxfs.findall(f"{_SS_NS}xf"):
+            fid_str = xf.get("fontId")
+            try:
+                fid = int(fid_str) if fid_str is not None else 0
+            except ValueError:
+                fid = 0
+            out.append(font_italic[fid] if 0 <= fid < len(font_italic) else False)
+    return out
+
+
+def _xlsx_cell_value(cell, shared_strings):
+    """Return the string value of an <c> element, handling shared strings,
+    inline strings, and raw values."""
+    t = cell.get("t", "")
+    if t == "s":
+        v = cell.find(f"{_SS_NS}v")
+        if v is None or v.text is None:
+            return ""
+        try:
+            return shared_strings[int(v.text)]
+        except (ValueError, IndexError):
+            return ""
+    if t == "inlineStr":
+        return "".join(n.text or "" for n in cell.iter(f"{_SS_NS}t"))
+    v = cell.find(f"{_SS_NS}v")
+    return v.text if v is not None and v.text is not None else ""
+
+
+def _xlsx_col_letter(ref):
+    """'C12' -> 'C'."""
+    return re.sub(r"\d+$", "", ref or "")
+
+
+def load_from_xlsx_iast(xlsx_path):
+    """Load IAST.xlsx with header row mapping.
+
+    Returns rows in the same shape build_replacements() expects, plus per-row
+    iastItalic and isDefault flags drawn from cell formatting and column C.
+    """
+    with zipfile.ZipFile(xlsx_path) as z:
+        try:
+            ss_xml = z.read("xl/sharedStrings.xml").decode("utf-8")
+        except KeyError:
+            ss_xml = ""
+        try:
+            styles_xml = z.read("xl/styles.xml").decode("utf-8")
+        except KeyError:
+            styles_xml = ""
+        ws_xml = z.read("xl/worksheets/sheet1.xml").decode("utf-8")
+
+    shared_strings = _xlsx_parse_shared_strings(ss_xml)
+    xf_italic = _xlsx_parse_xf_italics(styles_xml)
+
+    root = _ET.fromstring(ws_xml)
+    headers = {}        # header_name -> column letter
+    notes_col = "C"     # JS hard-codes the third column for notes/default flag
+    rows = []
+    for row in root.iter(f"{_SS_NS}row"):
+        try:
+            r_num = int(row.get("r") or "0")
+        except ValueError:
+            r_num = 0
+        cells = {}      # column letter -> {value, italic}
+        for c in row.findall(f"{_SS_NS}c"):
+            col = _xlsx_col_letter(c.get("r", ""))
+            value = _xlsx_cell_value(c, shared_strings)
+            s_str = c.get("s")
+            try:
+                s_idx = int(s_str) if s_str is not None else 0
+            except ValueError:
+                s_idx = 0
+            italic = xf_italic[s_idx] if 0 <= s_idx < len(xf_italic) else False
+            cells[col] = {"value": value, "italic": italic}
+        if r_num == 1:
+            for col, cell in cells.items():
+                if cell["value"]:
+                    headers[cell["value"]] = col
+            continue
+        if not headers:
+            continue
+        i_col = headers.get(COL_IAST)
+        r_col = headers.get(COL_ROMANIZED)
+        if not i_col or not r_col:
+            continue
+        i_cell = cells.get(i_col)
+        r_cell = cells.get(r_col)
+        if not i_cell or not r_cell or not i_cell["value"] or not r_cell["value"]:
+            continue
+        notes = (cells.get(notes_col, {}).get("value") or "").strip().lower()
+        rows.append({
+            COL_IAST: i_cell["value"],
+            COL_ROMANIZED: r_cell["value"],
+            "iastItalic": i_cell["italic"],
+            "isDefault": notes == "default",
+        })
+    return rows
+
+
+def load_from_xlsx_beae(xlsx_path):
+    """Load BE_AE.xlsx -> [{British, American}, ...]. Header row is skipped."""
+    with zipfile.ZipFile(xlsx_path) as z:
+        try:
+            ss_xml = z.read("xl/sharedStrings.xml").decode("utf-8")
+        except KeyError:
+            ss_xml = ""
+        ws_xml = z.read("xl/worksheets/sheet1.xml").decode("utf-8")
+
+    shared_strings = _xlsx_parse_shared_strings(ss_xml)
+    root = _ET.fromstring(ws_xml)
+    rows = []
+    for row in root.iter(f"{_SS_NS}row"):
+        try:
+            r_num = int(row.get("r") or "0")
+        except ValueError:
+            r_num = 0
+        if r_num == 1:
+            continue
+        cells = {}
+        for c in row.findall(f"{_SS_NS}c"):
+            col = _xlsx_col_letter(c.get("r", ""))
+            cells[col] = _xlsx_cell_value(c, shared_strings).strip()
+        be = cells.get("A", "")
+        ae = cells.get("B", "")
+        if be and ae:
+            rows.append({"British": be, "American": ae})
     return rows
 
 
@@ -254,6 +438,69 @@ def generate_sri_variants(iast: str, rom: str) -> list[tuple[str, str]]:
 _SEP_RE = re.compile(r"[-\s]")
 
 
+def generate_sandhi_variants(iast: str, rom: str,
+                             known_roms: set[str]) -> list[tuple[str, str]]:
+    """
+    Compound rom forms with no internal separator that decompose at an 'a'
+    junction into two known guide stems get space- and hyphen-separated
+    input variants generated.
+
+      "gunavatara" (= guṇa + avatāra after sandhi a+a → ā, written 'a' in
+                     romanised form) splits at index 3 into:
+        part1 = "guna"     (in guide)
+        part2 = "avatara"  (matches "avatar(a)" via dropped-a)
+      → variants: "guna avatara", "guna-avatara",
+                  "guna avatar",  "guna-avatar"
+
+    Only triggers when canonical rom contains no separator (otherwise
+    generate_compound_variants() handles the splits).
+    """
+    if not rom or re.search(r"[-\s]", rom):
+        return []
+    if len(rom) < 6:
+        return []
+
+    variants: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    lower = rom.lower()
+
+    # Walk every interior 'a' as a candidate sandhi junction. The shared 'a'
+    # belongs to the END of part1 — so part2 needs an 'a' prepended (its own
+    # initial 'a' that the sandhi merge consumed in the canonical form).
+    for i in range(2, len(lower) - 2):
+        if lower[i] != "a":
+            continue
+        part1 = rom[: i + 1]          # ends in 'a'
+        part2 = "a" + rom[i + 1:]     # restored leading 'a'
+        if len(part1) < 3 or len(part2) < 3:
+            continue
+        if part1.lower() not in known_roms:
+            continue
+
+        # Accept part2 directly OR via dropped-a ("avatara" via "avatar").
+        # When the dropped-a form matches, register BOTH so users who spell
+        # out the final -a are also covered.
+        part2_forms: set[str] = set()
+        if part2.lower() in known_roms:
+            part2_forms.add(part2)
+        elif part2.endswith("a") and part2[:-1].lower() in known_roms:
+            part2_forms.add(part2[:-1])
+            part2_forms.add(part2)
+        if not part2_forms:
+            continue
+
+        for p2 in part2_forms:
+            for sep in (" ", "-"):
+                v = f"{part1}{sep}{p2}"
+                if v.lower() == lower:
+                    continue  # collides with canonical
+                if v.lower() in seen:
+                    continue
+                seen.add(v.lower())
+                variants.append((iast, v))
+    return variants
+
+
 def generate_compound_variants(iast: str, rom: str) -> list[tuple[str, str]]:
     """
     For compound terms written with hyphens or spaces, generate separator-
@@ -303,36 +550,43 @@ def generate_compound_variants(iast: str, rom: str) -> list[tuple[str, str]]:
     return variants
 
 
-# Common English phonetic variants for IAST chars. First entry is the BM
-# convention already used in the guide's Romanised column; additional entries
-# are common English spellings we want to catch (Leela, Shree, pooja, …).
+# Common English phonetic variants for IAST chars. The IAST char itself is
+# included as one option so partial-IAST input (some diacritics typed, some
+# not — e.g. "Kṛṣṇarpanam") is also matched. Mirrors index.html.
 _VOWEL_VARIANT_CHOICES = {
-    "ī": ("i", "ee"),   "Ī": ("I", "Ee"),
-    "ū": ("u", "oo"),   "Ū": ("U", "Oo"),
-    "ś": ("sh", "s"),   "Ś": ("Sh", "S"),
+    "ī": ("i", "ee", "ī"),   "Ī": ("I", "Ee", "Ī"),
+    "ū": ("u", "oo", "ū"),   "Ū": ("U", "Oo", "Ū"),
+    "ś": ("sh", "s", "ś"),   "Ś": ("Sh", "S", "Ś"),
     # IAST 'c' (palatal stop) → "ch" in English phonetics, but also written
     # as plain "c" in some systems (e.g. "acarya" vs "acharya").
-    "c": ("ch", "c"),   "C": ("Ch", "C"),
+    "c": ("ch", "c"),        "C": ("Ch", "C"),
+    # ā can stay as ā (correct IAST) or be simplified to a (English phonetic).
+    "ā": ("a", "ā"),         "Ā": ("A", "Ā"),
+    # ṛ → "ri" (standard), plain "r" (ISKCON/common), or kept as ṛ.
+    "ṛ": ("ri", "r", "ṛ"),   "Ṛ": ("Ri", "R", "Ṛ"),
+    # ṣ (retroflex sibilant) → "sh", plain "s", or kept as ṣ.
+    "ṣ": ("sh", "s", "ṣ"),   "Ṣ": ("Sh", "S", "Ṣ"),
+    # ṇ (retroflex nasal) → "n" or kept as ṇ.
+    "ṇ": ("n", "ṇ"),         "Ṇ": ("N", "Ṇ"),
 }
 
 # IAST chars that always map to the same romanisation (no variants).
+# Chars with multiple romanisations live in _VOWEL_VARIANT_CHOICES instead.
 _STANDARD_IAST_MAP = {
-    "ā": "a",   "Ā": "A",
-    "ṛ": "ri",  "Ṛ": "Ri",  "ṝ": "ri",
+    "ṝ": "ri",
     "ḷ": "l",   "Ḷ": "L",
     "ṃ": "m",   "Ṃ": "M",   "ṁ": "m",  "Ṁ": "M",
     "ḥ": "h",   "Ḥ": "H",
-    "ṣ": "sh",  "Ṣ": "Sh",
     "ñ": "n",   "Ñ": "N",
     "ṭ": "t",   "Ṭ": "T",
     "ḍ": "d",   "Ḍ": "D",
-    "ṇ": "n",   "Ṇ": "N",
-    "ḻ": "l",   "Ḻ": "L",    "ṅ": "n",   "Ṅ": "N",
-    # Note: "c"/"C" moved to _VOWEL_VARIANT_CHOICES (two options: ch, c).
+    "ḻ": "l",   "Ḻ": "L",
+    "ṅ": "n",   "Ṅ": "N",
 }
 
-# Cap combinations for pathological inputs — 2^n grows quickly
-_VOWEL_VARIANT_MAX_COMBOS = 32
+# Cap on Cartesian-product combinations. Terms like Kṛṣṇārpaṇam have ~72
+# combos (ṛ×3, ṣ×3, ṇ×2, ā×2, ṇ×2); 256 gives headroom for complex compounds.
+_VOWEL_VARIANT_MAX_COMBOS = 256
 
 
 def generate_vowel_variants(iast: str, rom: str) -> list[tuple[str, str]]:
@@ -375,6 +629,78 @@ def generate_vowel_variants(iast: str, rom: str) -> list[tuple[str, str]]:
 
 
 # ---------------------------------------------------------------------------
+# 2.5. BE→AE (British → American) suffix expansion + rule builder
+# ---------------------------------------------------------------------------
+# Mirrors generateBEAESuffixVariants() / buildBEAERules() in index.html.
+
+def generate_beae_suffix_variants(be: str, ae: str) -> list[tuple[str, str]]:
+    """Auto-generate inflected forms of common BE→AE pairs.
+       colour / color  →  colours/colors, coloured/colored, colouring/coloring,
+                          colourful/colorful, colourless/colorless
+       realise / realize → realises/realizes, realised/realized,
+                          realising/realizing, realisation/realization,
+                          realiser/realizer
+       centre  / center → centres/centers, centred/centered, centring/centering
+       defence / defense → defences/defenses
+       catalogue / catalog → catalogues/catalogs, catalogued/cataloged,
+                          cataloguing/cataloging
+    """
+    v: list[tuple[str, str]] = []
+    if be.endswith("our") and ae.endswith("or"):
+        for s in ("s", "ed", "ing", "ful", "less"):
+            v.append((be + s, ae + s))
+    elif be.endswith("ise") and ae.endswith("ize"):
+        v.append((be + "s", ae + "s"))
+        v.append((be + "d", ae + "d"))
+        bs, as_ = be[:-1], ae[:-1]   # "realis", "realiz"
+        v.append((bs + "ing", as_ + "ing"))
+        v.append((bs + "ation", as_ + "ation"))
+        v.append((bs + "er", as_ + "er"))
+    elif be.endswith("re") and ae.endswith("er"):
+        v.append((be + "s", ae + "s"))
+        v.append((be + "d", ae + "ed"))            # centred / centered
+        v.append((be[:-1] + "ing", ae + "ing"))    # centring / centering
+    elif be.endswith("ce") and ae.endswith("se"):
+        v.append((be + "s", ae + "s"))
+    elif be.endswith("ogue") and ae.endswith("og"):
+        v.append((be + "s", ae + "s"))
+        v.append((be + "d", ae + "ed"))            # catalogued / cataloged
+        v.append((be[:-1] + "ing", ae + "ing"))    # cataloguing / cataloging
+    return v
+
+
+def build_beae_rules(rows) -> list[Replacement]:
+    """Build Replacement rules from [{British, American}, ...] rows.
+    Each rule is tagged origin='be-ae' so apply_replacements_to_line can
+    skip them when AE mode is off."""
+    rules: list[Replacement] = []
+    seen: set[str] = set()
+
+    def try_add(be: str, ae: str) -> None:
+        be = _nfc(be.strip())
+        ae = _nfc(ae.strip())
+        if not be or not ae or be.lower() == ae.lower():
+            return
+        key = be.lower()
+        if key in seen:
+            return
+        seen.add(key)
+        rules.append(Replacement(
+            wrong=be, right=ae, origin="be-ae", source_row=0,
+        ))
+
+    for row in rows:
+        be = (row.get("British") or "").strip()
+        ae = (row.get("American") or "").strip()
+        if not be or not ae:
+            continue
+        try_add(be, ae)
+        for bv, av in generate_beae_suffix_variants(be, ae):
+            try_add(bv, av)
+    return rules
+
+
+# ---------------------------------------------------------------------------
 # 3. Build replacement rules
 # ---------------------------------------------------------------------------
 
@@ -387,6 +713,7 @@ def build_replacements(
     enable_sri_variants=True,
     enable_compound_variants=True,
     enable_vowel_variants=True,
+    enable_sandhi_variants=True,
     latex_mode=False,
 ):
     replacements: list[Replacement] = []
@@ -394,30 +721,76 @@ def build_replacements(
     stats = {
         "total_rows": 0, "direct": 0, "paren_expansion": 0, "dropped_a": 0,
         "italic_only": 0, "sri_variant": 0, "compound_variant": 0,
-        "vowel_variant": 0,
+        "vowel_variant": 0, "sandhi_variant": 0, "near_iast": 0, "protect": 0,
         "skipped_duplicate": 0, "skipped_same": 0, "skipped_empty": 0,
     }
 
-    def try_add(wrong, right, origin, source_row):
-        wrong, right = wrong.strip(), right.strip()
+    # Pre-pass: collect every romanised stem (incl. paren-expanded +
+    # dropped-a forms) so generate_sandhi_variants() can validate that
+    # both parts of a candidate split are actually recognised guide entries.
+    known_roms: set[str] = set()
+    for row in rows:
+        iast_raw = row.get(col_iast, "").strip()
+        rom_raw = row.get(col_rom, "").strip()
+        if not iast_raw or not rom_raw:
+            continue
+        for iast_form, rom_form in expand_parentheses(iast_raw, rom_raw):
+            known_roms.add(rom_form.lower())
+            dropped = generate_dropped_a_variant(iast_form, rom_form)
+            if dropped:
+                known_roms.add(dropped[1].lower())
+
+    def try_add(wrong, right, origin, source_row,
+                italic=False, is_default=False):
+        """Register a replacement rule.
+
+        italic      — row's iast italic flag (from XLSX cell formatting).
+        is_default  — row was tagged "default" in column C; allows this rule
+                      to evict a previously-registered non-default rule for
+                      the same key (mirrors the JS canEvict logic).
+        """
+        wrong, right = _nfc(wrong.strip()), _nfc(right.strip())
         if not wrong or not right:
             stats["skipped_empty"] += 1
             return
-        if wrong == right:
-            if not latex_mode:
-                stats["skipped_same"] += 1
-                return
-            if not should_italicize(right):
-                stats["skipped_same"] += 1
-                return
-            origin = "italic-only"
         key = wrong.lower()
+        has_alternate = False
         if key in seen_wrong:
-            stats["skipped_duplicate"] += 1
-            return
-        rule = Replacement(
-            wrong=wrong, right=right, origin=origin, source_row=source_row
-        )
+            existing = seen_wrong[key]
+            # Default row may evict a previously-registered non-default rule.
+            if is_default and not existing.is_default:
+                replacements.remove(existing)
+                has_alternate = True
+            else:
+                stats["skipped_duplicate"] += 1
+                return
+        if wrong == right:
+            # Self-entry. If italic, register an italic-only rule so the term
+            # gets wrapped (LaTeX mode). If non-italic, register a "protect"
+            # placeholder so the rule generates a candidate that wins the
+            # overlap race against shorter sub-phrase rules — e.g.
+            # "Paramahamsa Vishwananda" blocks "paramahamsa" mid-phrase.
+            if italic:
+                origin = "italic-only"
+                rule = Replacement(
+                    wrong=wrong, right=right, origin=origin,
+                    source_row=source_row, italic=True,
+                    is_default=is_default, has_alternate=has_alternate,
+                )
+            else:
+                origin = "protect"
+                rule = Replacement(
+                    wrong=wrong, right=right, origin=origin,
+                    source_row=source_row, italic=False,
+                    is_default=is_default, has_alternate=has_alternate,
+                    protect=True,
+                )
+        else:
+            rule = Replacement(
+                wrong=wrong, right=right, origin=origin,
+                source_row=source_row, italic=italic,
+                is_default=is_default, has_alternate=has_alternate,
+            )
         seen_wrong[key] = rule
         replacements.append(rule)
         stats[origin.replace("-", "_")] = stats.get(
@@ -445,29 +818,62 @@ def build_replacements(
             stats["skipped_empty"] += 1
             continue
 
+        # Per-row flags (XLSX cell italic + column C "default" tag).
+        # CSV/Google Sheet rows lack these; fall back to the should_italicize()
+        # heuristic in that case.
+        if "iastItalic" in row:
+            italic = bool(row["iastItalic"])
+        else:
+            italic = should_italicize(iast)
+        is_default = bool(row.get("isDefault", False))
+
         pairs = (expand_parentheses(iast, rom)
                  if enable_paren_expansion else [(iast, rom)])
 
         for iast_form, rom_form in pairs:
             origin = "direct" if len(pairs) == 1 else "paren-expansion"
-            try_add(rom_form, iast_form, origin, i)
+            try_add(rom_form, iast_form, origin, i, italic, is_default)
 
             if enable_dropped_a:
                 dropped = generate_dropped_a_variant(iast_form, rom_form)
                 if dropped is not None:
-                    try_add(dropped[1], dropped[0], "dropped-a", i)
+                    try_add(dropped[1], dropped[0], "dropped-a", i,
+                            italic, is_default)
 
             if enable_sri_variants:
                 for var_iast, var_rom in generate_sri_variants(iast_form, rom_form):
-                    try_add(var_rom, var_iast, "sri-variant", i)
+                    try_add(var_rom, var_iast, "sri-variant", i,
+                            italic, is_default)
 
             if enable_compound_variants:
                 for var_iast, var_rom in generate_compound_variants(iast_form, rom_form):
-                    try_add(var_rom, var_iast, "compound-variant", i)
+                    try_add(var_rom, var_iast, "compound-variant", i,
+                            italic, is_default)
 
             if enable_vowel_variants:
                 for var_iast, var_rom in generate_vowel_variants(iast_form, rom_form):
-                    try_add(var_rom, var_iast, "vowel-variant", i)
+                    try_add(var_rom, var_iast, "vowel-variant", i,
+                            italic, is_default)
+
+            if enable_sandhi_variants:
+                for var_iast, var_rom in generate_sandhi_variants(
+                        iast_form, rom_form, known_roms):
+                    try_add(var_rom, var_iast, "sandhi-variant", i,
+                            italic, is_default)
+
+            # Near-IAST variants: for compound IAST forms (with hyphens/spaces),
+            # also register rules where short vowels (i, u) appear as long
+            # equivalents (ī, ū). Catches partial-IAST typing like
+            # "Brahma-nāḍī" → guide entry "Brahma-nāḍi".
+            if iast_form != rom_form and re.search(r"[-\s]", iast_form):
+                near_long = {"i": "ī", "I": "Ī", "u": "ū", "U": "Ū"}
+                chars = list(iast_form)
+                for k, ch in enumerate(chars):
+                    if ch in near_long:
+                        v = chars.copy()
+                        v[k] = near_long[ch]
+                        try_add("".join(v), iast_form, "near-iast", i,
+                                italic, is_default)
 
     # Classify each conflicted romanized key into two categories:
     #
@@ -528,8 +934,10 @@ def is_inside_protected(pos, length, spans):
 
 
 # Characters that indicate the end of a previous sentence (so the next
-# word is sentence-initial and legitimately capitalized)
-SENTENCE_END_RE = re.compile(r"[.!?][\"'”’)\]]*\s+$")
+# word is sentence-initial and legitimately capitalized). The } is included
+# so \enquote{...} and similar LaTeX commands are recognised as sentence-
+# terminal when their content ends with . ! or ?.
+SENTENCE_END_RE = re.compile(r"[.!?][\"'”’)\]}]*\s+$")
 
 # LaTeX commands that introduce fresh text (arg starts a new "sentence"
 # for capitalization purposes): \chapter{Foo}, \section{Foo}, \item Foo
@@ -539,15 +947,27 @@ SENTENCE_START_CONTEXT_RE = re.compile(
     r"emph)\*?\{?\s*$"
 )
 
+# Trailing LaTeX font command + opening brace, e.g. "\textit{" — stripped
+# from `before` so ". \textit{Bhakti}" is still recognised as post-sentence.
+_LATEX_FONT_OPEN_RE = re.compile(r"\\(?:textit|emph|textsl|textsf|textbf|texttt)\{$")
 
-def is_at_sentence_start(line: str, pos: int) -> bool:
+
+def is_at_sentence_start(line: str, pos: int, end: int | None = None) -> bool:
     """
     True if the character at `pos` is the first letter of a sentence:
     preceded only by whitespace from line start, or by sentence-ending
     punctuation + whitespace, or by a LaTeX command that opens fresh text.
+
+    `end` (when provided) enables the standalone-term carve-out: a match
+    with nothing non-whitespace after it (a bare term on its own) returns
+    False so match_case() uses the guide's canonical casing instead of
+    forcing a sentence-initial capital. "Karma" alone → "karma"; but
+    "Karma is key" → "Karma".
     """
-    before = line[:pos]
+    before = _LATEX_FONT_OPEN_RE.sub("", line[:pos])
     if before.strip() == "":
+        if end is not None and not line[end:].strip():
+            return False  # standalone term — use guide casing
         return True
     if SENTENCE_END_RE.search(before):
         return True
@@ -560,15 +980,18 @@ def match_case(original: str, replacement: str, sentence_start: bool) -> str:
     """
     The guide's canonical casing is authoritative, with two exceptions:
       - ALL CAPS in text (len > 1)  -> keep caps (headings etc.)
-      - Sentence-initial capital    -> uppercase the first letter of the
-                                       replacement, since capitalization
-                                       there is grammatical, not editorial.
+      - Original starts uppercase OR at sentence start
+                                    -> uppercase the first letter of the
+                                       replacement, preserving capitalisation
+                                       even when the match starts after a
+                                       quote / opening bracket / non-sentence
+                                       punctuation (e.g. '"Bhakti" is good').
     """
     if not original or not replacement:
         return replacement
     if len(original) > 1 and original.isupper():
         return replacement.upper()
-    if sentence_start and original[0].isupper():
+    if sentence_start or original[0].isupper():
         return replacement[0].upper() + replacement[1:]
     return replacement
 
@@ -625,18 +1048,26 @@ def find_italic_content_spans(line: str) -> list[tuple[int, int]]:
 
 
 def apply_replacements_to_line(line, replacements, latex_mode=False,
-                               italic_cmd="textit"):
+                               italic_cmd="textit", ae_mode=False):
+    # NFC-normalise so input with combining diacritics (NFD) — common from
+    # word processors and web pages — matches the NFC patterns built from
+    # the guide. No-op for already-NFC text.
+    line = _nfc(line)
     protected = find_protected_spans(line)
     italic_spans = find_italic_content_spans(line) if latex_mode else []
     candidates = []
 
     for rule in replacements:
+        # Skip BE→AE rules when the toggle is off.
+        if rule.origin == "be-ae" and not ae_mode:
+            continue
         for m in rule.pattern.finditer(line):
             start, end = m.start(), m.end()
             if is_inside_protected(start, end - start, protected):
                 continue
             matched = m.group()
-            new_spelling = match_case(matched, rule.right, is_at_sentence_start(line, start))
+            new_spelling = match_case(
+                matched, rule.right, is_at_sentence_start(line, start, end))
 
             # Decide whether to wrap in \textit{}:
             #   - LaTeX mode is on
@@ -650,7 +1081,7 @@ def apply_replacements_to_line(line, replacements, latex_mode=False,
             # when the match is already the direct argument of an italic command —
             # i.e. the text immediately before start is '\cmd{' and immediately
             # after end is '}'. This prevents \textit{\textit{bhakti}} on re-runs.
-            if not inside_italic and latex_mode and should_italicize(rule.right):
+            if not inside_italic and latex_mode and rule.italic:
                 pre  = line[:start]
                 post = line[end:]
                 for _ic in ('textit', 'emph', 'textsl', 'textsf'):
@@ -658,10 +1089,13 @@ def apply_replacements_to_line(line, replacements, latex_mode=False,
                         inside_italic = True
                         break
 
+            # Italic flag comes from the rule itself (XLSX cell formatting +
+            # BE/AE rules carry italic=False), not from the should_italicize()
+            # heuristic — that would wrap every lowercase BE→AE replacement.
             wrap_italic = (
                 latex_mode
                 and not inside_italic
-                and should_italicize(rule.right)
+                and rule.italic
             )
 
             if wrap_italic:
@@ -669,7 +1103,11 @@ def apply_replacements_to_line(line, replacements, latex_mode=False,
             else:
                 final = new_spelling
 
-            if matched == final:
+            # Keep protect candidates even when matched===final so they win the
+            # overlap-resolution race against shorter sub-phrase rules. The
+            # writeback below is a no-op for those, but the long span blocks
+            # any shorter rule whose match falls inside it.
+            if matched == final and not rule.protect:
                 continue  # no change
 
             candidates.append((start, end, matched, final, rule))
@@ -684,11 +1122,16 @@ def apply_replacements_to_line(line, replacements, latex_mode=False,
 
     new_line = line
     changes = []
+    kept_spans = [(c[0], c[1]) for c in kept]
     for start, end, matched, new, rule in reversed(kept):
         new_line = new_line[:start] + new + new_line[end:]
+        # Skip change record for protect placeholders that didn't actually
+        # change anything (their job is just to win the overlap race).
+        if matched == new and rule.protect:
+            continue
         changes.append((matched, new, rule))
     changes.reverse()
-    return new_line, changes
+    return new_line, changes, kept_spans
 
 
 # ---------------------------------------------------------------------------
@@ -892,6 +1335,11 @@ def enquote_process_line(line: str) -> tuple[str, list[tuple[str, str]]]:
         code = pattern.sub(tracking_convert, code)
 
     code = _eq_restore_regions(code, registry)
+
+    # American convention: move trailing period/comma inside \enquote{}.
+    # E.g. "\enquote{bhakti}." → "\enquote{bhakti.}"
+    code = re.sub(r"\\enquote\{([^}]*)}\s*([.,])", r"\\enquote{\1\2}", code)
+
     return code + comment + ending, found_changes
 
 
@@ -901,9 +1349,12 @@ def enquote_process_line(line: str) -> tuple[str, list[tuple[str, str]]]:
 
 def process_tex_content(lines, replacements, filename="<unknown>",
                         latex_mode=False, italic_cmd="textit",
-                        enable_enquote=True):
+                        enable_enquote=True, ae_mode=False):
     new_lines = []
     all_changes = []
+    # line_no -> list of (start, end) spans that won the overlap race.
+    # flag_unknown_terms uses this to skip candidates already replaced.
+    spans_per_line: dict[int, list[tuple[int, int]]] = {}
     inside = False
     env_name = ""
 
@@ -926,11 +1377,14 @@ def process_tex_content(lines, replacements, filename="<unknown>",
                 env_name = ""
             continue
 
-        new_line, changes = apply_replacements_to_line(
+        new_line, changes, kept_spans = apply_replacements_to_line(
             line, replacements,
             latex_mode=latex_mode,
             italic_cmd=italic_cmd,
+            ae_mode=ae_mode,
         )
+        if kept_spans:
+            spans_per_line[line_no] = kept_spans
         for matched, replaced, rule in changes:
             all_changes.append(ChangeRecord(
                 file=filename, line_no=line_no,
@@ -954,7 +1408,7 @@ def process_tex_content(lines, replacements, filename="<unknown>",
                 ))
 
         new_lines.append(new_line)
-    return new_lines, all_changes
+    return new_lines, all_changes, spans_per_line
 
 
 # ---------------------------------------------------------------------------
@@ -1146,26 +1600,38 @@ def looks_like_probable_sanskrit(term: str) -> bool:
     return False
 
 
-def flag_unknown_terms(lines, known_terms, filename):
+def flag_unknown_terms(lines, known_terms, filename, spans_per_line=None):
     """
     Flag possible Sanskrit / Indic technical terms that are not present in
     known_terms.
 
     known_terms is assumed to contain normalized lowercase keys.
+
+    spans_per_line (optional): {line_no: [(start, end), ...]} of accepted
+    replacement spans. Candidates whose position overlaps any accepted
+    replacement are skipped — they were already handled by a rule.
     """
+    spans_per_line = spans_per_line or {}
     flagged = []
     seen = set()
 
     for line_no, line in enumerate(lines, start=1):
-        candidates = []
+        line_spans = spans_per_line.get(line_no, [])
 
-        # Main broad matcher
-        candidates.extend(m.group() for m in SANSKRIT_HINT_PATTERN.finditer(line))
+        def _overlaps(start: int, end: int) -> bool:
+            return any(start < e and end > s for s, e in line_spans)
 
-        # Optional second pass for compounds
-        candidates.extend(m.group() for m in SANSKRIT_COMPOUND_PATTERN.finditer(line))
+        # Use finditer so we have positions for the overlap check.
+        candidates: list[tuple[int, int, str]] = []
+        for m in SANSKRIT_HINT_PATTERN.finditer(line):
+            candidates.append((m.start(), m.end(), m.group()))
+        for m in SANSKRIT_COMPOUND_PATTERN.finditer(line):
+            candidates.append((m.start(), m.end(), m.group()))
 
-        for term in candidates:
+        for start, end, term in candidates:
+            if _overlaps(start, end):
+                continue
+
             normalized = normalize_flagged_term(term)
 
             if not normalized:
@@ -1273,7 +1739,8 @@ def print_change_report(changes):
     print(f"\n  {'=' * 60}")
     print(f"  Total changes: {len(changes)}")
     for origin in ["direct", "paren-expansion", "dropped-a", "sri-variant",
-                   "compound-variant", "vowel-variant", "italic-only", "enquote"]:
+                   "compound-variant", "vowel-variant", "sandhi-variant",
+                   "near-iast", "italic-only", "be-ae", "enquote"]:
         n = by_origin.get(origin, 0)
         if n:
             print(f"    {origin}:{' ' * (17 - len(origin))}{n}")
@@ -1287,7 +1754,8 @@ def print_change_report(changes):
         print(f"\n  File: {fname}  ({len(file_changes)} changes)")
         print(f"  {'-' * 56}")
         for origin in ["direct", "paren-expansion", "dropped-a", "sri-variant",
-                       "compound-variant", "italic-only"]:
+                       "compound-variant", "vowel-variant", "sandhi-variant",
+                       "near-iast", "italic-only", "be-ae", "enquote"]:
             group = [c for c in file_changes if c.origin == origin]
             if not group:
                 continue
@@ -1325,18 +1793,19 @@ def print_unknown_report(flagged, filename):
 
 def process_file(filepath, replacements, dry_run, flag_unknown,
                  known_terms, no_backup, latex_mode=False,
-                 italic_cmd="textit", enable_enquote=True):
+                 italic_cmd="textit", enable_enquote=True, ae_mode=False):
     with open(filepath, "r", encoding="utf-8") as f:
         lines = f.readlines()
 
-    new_lines, changes = process_tex_content(
+    new_lines, changes, spans_per_line = process_tex_content(
         lines, replacements, filename=str(filepath),
         latex_mode=latex_mode, italic_cmd=italic_cmd,
-        enable_enquote=enable_enquote,
+        enable_enquote=enable_enquote, ae_mode=ae_mode,
     )
 
     if flag_unknown:
-        flagged = flag_unknown_terms(lines, known_terms, str(filepath))
+        flagged = flag_unknown_terms(
+            lines, known_terms, str(filepath), spans_per_line=spans_per_line)
         print_unknown_report(flagged, str(filepath))
 
     if not dry_run and changes:
@@ -1366,6 +1835,15 @@ def main():
         help="Preview changes without modifying files.")
     parser.add_argument("--csv", metavar="FILE",
         help="Use local CSV instead of Google Sheets API.")
+    parser.add_argument("--xlsx", metavar="FILE",
+        help="Use local XLSX instead of Google Sheets API. Reads cell italic "
+             "formatting and column C (\"default\" tag), matching the web UI.")
+    parser.add_argument("--ae", action="store_true",
+        help="Convert British spellings to American (colour→color, "
+             "realise→realize, etc.). Loads BE_AE.xlsx from --beae-xlsx, or "
+             "the file alongside --xlsx if not specified.")
+    parser.add_argument("--beae-xlsx", metavar="FILE",
+        help="Path to BE_AE.xlsx. Defaults to BE_AE.xlsx alongside --xlsx.")
     parser.add_argument("--credentials", default=CREDENTIALS_FILE,
         help=f"Service account JSON path (default: {CREDENTIALS_FILE}).")
     parser.add_argument("--sheet-id", default=SPREADSHEET_ID,
@@ -1391,6 +1869,9 @@ def main():
         help="Disable generation of common English phonetic spellings for IAST "
              "vowels/consonants (e.g. 'Leela' for līlā, 'pooja' for pūjā, "
              "'Sri' for Śrī via the s→ś path).")
+    parser.add_argument("--no-sandhi-variants", action="store_true",
+        help="Disable generation of sandhi-split variants (e.g. 'guna avatara' "
+             "/ 'guna-avatara' from compound 'gunavatara').")
     parser.add_argument("--flag-unknown", action="store_true",
         help="Report Sanskrit-looking terms not in the guide.")
     parser.add_argument("--no-backup", action="store_true",
@@ -1411,9 +1892,13 @@ def main():
     args = parser.parse_args()
 
     print("\n[1/3] Loading IAST spelling guide...")
-    rows = (load_from_csv(args.csv) if args.csv
-            else load_from_google_sheet(
-                args.sheet_id, args.worksheet, args.credentials))
+    if args.xlsx:
+        rows = load_from_xlsx_iast(args.xlsx)
+    elif args.csv:
+        rows = load_from_csv(args.csv)
+    else:
+        rows = load_from_google_sheet(
+            args.sheet_id, args.worksheet, args.credentials)
 
     replacements, stats, true_ambiguous_keys, casing_variant_keys, ambiguity_map = \
         build_replacements(
@@ -1425,9 +1910,36 @@ def main():
             enable_sri_variants=not args.no_sri_variants,
             enable_compound_variants=not args.no_compound_variants,
             enable_vowel_variants=not args.no_vowel_variants,
+            enable_sandhi_variants=not args.no_sandhi_variants,
             latex_mode=args.latex,
         )
+
+    # BE→AE rules: loaded only when --ae is set. Default file is BE_AE.xlsx
+    # next to --xlsx (matches the web UI's convention).
+    beae_count = 0
+    if args.ae:
+        beae_path = args.beae_xlsx
+        if not beae_path and args.xlsx:
+            beae_path = str(Path(args.xlsx).parent / "BE_AE.xlsx")
+        if not beae_path:
+            print("  WARNING: --ae set but no --beae-xlsx and no --xlsx to "
+                  "infer the path from. Skipping BE/AE rules.")
+        else:
+            try:
+                beae_rows = load_from_xlsx_beae(beae_path)
+                beae_rules = build_beae_rules(beae_rows)
+                replacements.extend(beae_rules)
+                beae_count = len(beae_rules)
+            except (FileNotFoundError, OSError) as e:
+                print(f"  WARNING: failed to load {beae_path}: {e}. "
+                      "Skipping BE/AE rules.")
+
+    # Re-sort after merging so longest patterns still take priority overall.
+    replacements.sort(key=lambda r: (len(r.wrong), r.wrong), reverse=True)
+
     print_load_stats(stats, len(replacements))
+    if beae_count:
+        print(f"  BE→AE rules added (--ae): {beae_count}")
     print_ambiguity_report(
         true_ambiguous_keys, casing_variant_keys, ambiguity_map, replacements
     )
@@ -1483,6 +1995,7 @@ def main():
             latex_mode=args.latex,
             italic_cmd=args.italic_cmd,
             enable_enquote=args.latex and not args.no_enquote,
+            ae_mode=args.ae,
         ))
 
     print_change_report(all_changes)
