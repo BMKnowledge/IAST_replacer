@@ -540,6 +540,52 @@
         color: var(--c-text-faint);
       }
 
+      /* ── Request term ──────────────────────────────────────────────────────── */
+      .request-term {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 10px;
+        margin-bottom: 22px;
+      }
+      a.request-btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 9px;
+        background: #229ed9;
+        border: none;
+        border-radius: 8px;
+        padding: 12px 22px;
+        font-size: 0.95rem;
+        font-weight: 600;
+        color: #fff;
+        text-decoration: none;
+        cursor: pointer;
+        box-shadow: 0 2px 8px rgba(34, 158, 217, 0.35);
+        transition:
+          background 0.15s,
+          box-shadow 0.15s,
+          transform 0.1s;
+      }
+      a.request-btn:hover {
+        background: #1c8ec2;
+        box-shadow: 0 4px 14px rgba(34, 158, 217, 0.5);
+      }
+      a.request-btn:active {
+        transform: translateY(1px);
+      }
+      a.request-btn svg {
+        width: 18px;
+        height: 18px;
+        fill: currentColor;
+      }
+      .request-note {
+        max-width: 440px;
+        font-size: 0.8rem;
+        line-height: 1.45;
+        color: var(--c-text-sub);
+      }
+
       /* ── Responsive ────────────────────────────────────────────────────────── */
       @media (max-width: 800px) {
         main {
@@ -662,6 +708,25 @@
     </main>
 
     <footer>
+      <div class="request-term">
+        <a
+          class="request-btn"
+          href="https://t.me/BM_IAST_bot"
+          target="_blank"
+          rel="noopener"
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path
+              d="M9.78 18.65l.28-4.23 7.68-6.92c.34-.31-.07-.46-.52-.19L7.74 13.3 3.64 12c-.88-.25-.89-.86.2-1.3l15.97-6.16c.73-.33 1.43.18 1.15 1.3l-2.72 12.81c-.19.91-.74 1.13-1.5.71l-4.14-3.06-1.99 1.93c-.23.23-.42.42-.83.42z"
+            />
+          </svg>
+          Request Term</a
+        >
+        <p class="request-note">
+          In case the IAST Replacer seems to not recognize a term, please send a
+          request through our Telegram bot.
+        </p>
+      </div>
       Uses the BM Knowledge IAST Spelling Guide &nbsp;·&nbsp;
       <a href="https://github.com/acharl/IAST_replacer" style="color: #aaa"
         >GitHub</a
