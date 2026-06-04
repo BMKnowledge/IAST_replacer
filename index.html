@@ -2111,8 +2111,18 @@
         const htmlCode = hCIdx >= 0 ? html.slice(0, hCIdx) : html;
         const htmlComment = hCIdx >= 0 ? html.slice(hCIdx) : "";
 
+        // Protect HTML tags (e.g. <mark class="found">) so the quote patterns
+        // don't mistake attribute quotes — like the " in class="found" — for
+        // quotation marks and mangle the markup.
+        const tagRegistry = [];
+        const htmlCodeSafe = htmlCode.replace(/<[^>]+>/g, (tag) => {
+          const token = `EQTAG_${Math.random().toString(36).slice(2)}_END`;
+          tagRegistry.push([token, tag]);
+          return token;
+        });
+
         const { tokenized: tokHtml, registry: regHtml } =
-          _eqProtectRegions(htmlCode);
+          _eqProtectRegions(htmlCodeSafe);
         let newHtmlCode = tokHtml;
         for (const pattern of _EQ_PATTERNS) {
           if (!pattern) continue;
@@ -2129,6 +2139,8 @@
           /<mark>(\\enquote\{[^}]*)}<\/mark>\s*([.,])/g,
           "<mark>$1$2}</mark>",
         );
+        // Restore the protected HTML tags.
+        newHtmlCode = _eqRestoreRegions(newHtmlCode, tagRegistry);
         const newHtml = newHtmlCode + htmlComment;
 
         return { plain: newPlain, html: newHtml, count };
