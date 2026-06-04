@@ -418,6 +418,14 @@
         padding: 0 1px;
       }
 
+      /* British → American spelling replacement */
+      #output-highlight mark.be-ae {
+        background: var(--c-chip-beae-bg);
+        color: var(--c-chip-beae-fg);
+        border-radius: 2px;
+        padding: 0 1px;
+      }
+
       #changed-terms {
         display: none;
         margin-top: 10px;
@@ -1821,7 +1829,14 @@
                 htmlResult += `<mark>${escapeHtml(newSpelling)}</mark>`;
               }
             } else {
-              const cls = rule.hasAlternate ? ' class="alternate"' : "";
+              // BE→AE spelling changes render purple; alternate-form changes
+              // get the dashed "alternate" highlight; everything else green.
+              const cls =
+                rule.origin === "be-ae"
+                  ? ' class="be-ae"'
+                  : rule.hasAlternate
+                    ? ' class="alternate"'
+                    : "";
               // No-op italic match inside text the user already italicised:
               // render as plain <em> with no <mark> — there is no real change to flag.
               const noopItalic =
