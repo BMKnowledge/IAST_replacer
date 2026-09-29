@@ -659,6 +659,10 @@
         color: var(--c-mark-fg);
         white-space: nowrap;
       }
+      #md-report .md-be-ae,
+      #md-report td.md-fix.md-be-ae {
+        color: var(--c-chip-beae-fg);
+      }
       #md-report td.md-context {
         color: var(--c-text-sub);
       }
@@ -735,6 +739,7 @@
         }
         .controls {
           flex-direction: row;
+          flex-wrap: wrap;
           padding: 8px 0;
           justify-content: flex-start;
           gap: 10px;
@@ -2867,7 +2872,7 @@
       // Runs in chunks, yielding to the browser between them so the page stays
       // responsive. onProgress(fraction) is called at each yield; returning
       // false aborts the check (returns null).
-      async function checkMarkdown(text, onProgress) {
+      async function checkMarkdown(text, beAeMode, onProgress) {
         const lines = text.normalize("NFC").split(/\r?\n/);
         const masked = maskMarkdown(lines);
         const issues = [];
@@ -2879,7 +2884,9 @@
             chunkStart = performance.now();
           }
           const line = masked[i];
-          const { matches } = applyReplacementsToLine(line, replacements, false, null);
+          const { matches } = applyReplacementsToLine(
+            line, replacements, false, null, false, beAeMode,
+          );
           for (const m of matches) {
             if (m.matched === m.newSpelling) continue;
             // Ignore pure sentence-start capitalisation (e.g. a hard-wrapped
@@ -2891,6 +2898,7 @@
               end: m.end,
               found: m.matched,
               fix: m.newSpelling,
+              beAe: m.rule.origin === "be-ae",
               text: lines[i],
             });
           }
@@ -2898,7 +2906,7 @@
         return issues;
       }
 
-      function renderMdReport(fileName, issues) {
+      function renderMdReport(fileName, issues, beAeMode) {
         const CTX = 50;
         const MAX_LINES_SHOWN = 10;
 
@@ -2914,11 +2922,18 @@
         );
 
         const lineCount = new Set(issues.map((i) => i.line)).size;
+        const beAeCount = issues.filter((i) => i.beAe).length;
+        const iastCount = issues.length - beAeCount;
         const summary = issues.length
-          ? `${issues.length} occurrence${issues.length === 1 ? "" : "s"} not in IAST · ` +
+          ? `${iastCount} occurrence${iastCount === 1 ? "" : "s"} not in IAST · ` +
+            (beAeMode
+              ? `<span class="md-be-ae">${beAeCount} not in AE spelling</span> · `
+              : "") +
             `${bundles.length} distinct term${bundles.length === 1 ? "" : "s"} · ` +
             `${lineCount} line${lineCount === 1 ? "" : "s"}`
-          : "No issues found — every guide term is already in IAST.";
+          : beAeMode
+            ? "No issues found — every guide term is already in IAST and AE spelling."
+            : "No issues found — every guide term is already in IAST.";
 
         const contextHtml = ({ start, end, found, text }) => {
           const from = Math.max(0, start - CTX);
@@ -2949,7 +2964,7 @@
               .join("");
             return (
               `<tr><td class="md-found">${escapeHtml(found)}</td>` +
-              `<td class="md-fix">${escapeHtml(fix)}</td>` +
+              `<td class="md-fix${bundle[0].beAe ? " md-be-ae" : ""}">${escapeHtml(fix)}</td>` +
               `<td class="md-count">${bundle.length}</td>` +
               `<td class="md-context"><details><summary>${linesLabel}</summary>` +
               `<ul>${occurrences}</ul></details></td></tr>`
@@ -2961,7 +2976,7 @@
           `<div class="md-summary">${summary}</div>` +
           (issues.length
             ? `<div class="md-table-wrap"><table><thead><tr>` +
-              `<th>Found</th><th>IAST</th><th>Count</th><th>Where</th>` +
+              `<th>Found</th><th>${beAeMode ? "Should be" : "IAST"}</th><th>Count</th><th>Where</th>` +
               `</tr></thead><tbody>${rows}</tbody></table></div>`
             : "");
         mdReportEl.style.display = "block";
@@ -2972,6 +2987,7 @@
       async function handleMdFile(file) {
         if (!file || !replacements) return;
         const run = ++mdRun;
+        const beAeMode = beAeToggle.checked;
         mdReportEl.innerHTML =
           `<h2>IAST check — ${escapeHtml(file.name)}</h2>` +
           `<div class="md-summary md-progress"><span class="spinner"></span>` +
@@ -2980,11 +2996,11 @@
         mdReportEl.scrollIntoView({ behavior: "smooth", block: "start" });
         const progressText = mdReportEl.querySelector(".md-progress span:last-child");
         await nextPaint();
-        const issues = await checkMarkdown(await file.text(), (fraction) => {
+        const issues = await checkMarkdown(await file.text(), beAeMode, (fraction) => {
           if (run !== mdRun) return false;
           progressText.textContent = `Checking… ${Math.round(fraction * 100)}%`;
         });
-        if (issues && run === mdRun) renderMdReport(file.name, issues);
+        if (issues && run === mdRun) renderMdReport(file.name, issues, beAeMode);
       }
 
       mdBtn.addEventListener("click", () => mdFileInput.click());
