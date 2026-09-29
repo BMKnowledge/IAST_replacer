@@ -1800,6 +1800,69 @@
         return spans.some(([s, e]) => start >= s && end <= e);
       }
 
+      // IAST letters whose romanized spelling (guide column B) is not simply the
+      // letter without its diacritic. Everything else folds by stripping marks.
+      const FOLD_MAP = {
+        ṛ: "ri", Ṛ: "Ri", ṝ: "ri", Ṝ: "Ri", ḷ: "li", Ḷ: "Li",
+        ś: "sh", Ś: "Sh", ṣ: "sh", Ṣ: "Sh",
+      };
+
+      /**
+       * Fold IAST diacritics to romanized spelling ("mahā-viśvas" →
+       * "maha-vishvas"). map[i] is the index in the original line of folded
+       * character i; map[folded.length] === line.length.
+       */
+      function foldDiacritics(line) {
+        let folded = "";
+        const map = [];
+        for (let i = 0; i < line.length; i++) {
+          const ch = line[i];
+          const f = FOLD_MAP[ch] ?? ch.normalize("NFD").replace(/[̀-ͯ]/g, "");
+          for (let k = 0; k < f.length; k++) map.push(i);
+          folded += f;
+        }
+        map.push(line.length);
+        return { folded, map };
+      }
+
+      /**
+       * Rules that can match folded text: every rule whose search form is plain
+       * ASCII (romanized spellings and their variants), plus one rule per guide
+       * entry matching its folded IAST form. The latter catches entries whose
+       * romanized spelling differs from the plain fold (guide "Kanchi-Kamakshi"
+       * vs folded "Kanci-Kamakshi"). Cached per rule array.
+       */
+      const foldedRulesCache = new WeakMap();
+      function foldedRules(replacements) {
+        let rules = foldedRulesCache.get(replacements);
+        if (rules) return rules;
+        rules = replacements.filter(
+          (r) => r.origin !== "be-ae" && /^[\x00-\x7F]*$/.test(r.wrong),
+        );
+        const seen = new Set(rules.map((r) => r.wrong.toLowerCase()));
+        // One representative rule per IAST form, preferring the guide's direct row
+        const byRight = new Map();
+        for (const r of replacements) {
+          if (r.origin === "be-ae") continue;
+          const prev = byRight.get(r.right);
+          if (!prev || (r.origin === "direct" && prev.origin !== "direct"))
+            byRight.set(r.right, r);
+        }
+        for (const [right, rep] of byRight) {
+          const wrong = foldDiacritics(right).folded;
+          if (seen.has(wrong.toLowerCase())) continue;
+          seen.add(wrong.toLowerCase());
+          const escaped = escapeRegex(wrong).replace(/[- ]/g, "[-\\s]+");
+          const pattern = new RegExp(
+            `(?<![${LETTER_CHARS}])${escaped}(?![${LETTER_CHARS}])`,
+            "gi",
+          );
+          rules.push({ ...rep, wrong, pattern });
+        }
+        foldedRulesCache.set(replacements, rules);
+        return rules;
+      }
+
       function applyReplacementsToLine(
         line,
         replacements,
@@ -1819,13 +1882,9 @@
 
         const candidates = [];
 
-        for (const rule of replacements) {
-          // Skip BE→AE rules when the toggle is off
-          if (rule.origin === "be-ae" && !beAeMode) continue;
-          for (const m of line.matchAll(rule.pattern)) {
-            const start = m.index;
-            const end = start + m[0].length;
-            const matched = m[0];
+        // Turn a rule match at [start, end) of the original line into a candidate.
+        const considerMatch = (rule, start, end) => {
+            const matched = line.slice(start, end);
             // In romanized mode use the canonical romanized form (column B);
             // in normal/LaTeX mode use the IAST form (column A).
             const targetRight = romanizedMode
@@ -1864,7 +1923,7 @@
               // (śrī→Śrī via sentence-start logic) and a rule's IAST spelling could
               // overwrite the user's chosen form (giridhāri→Giridhārī). The user
               // already wrapped this content in \textit{} — respect their intent.
-              if (insideLatexItalic) continue;
+              if (insideLatexItalic) return;
             }
 
             const wrapItalicLatex =
@@ -1898,6 +1957,31 @@
               wrapItalicHtml,
               wrapItalicRom,
             });
+        };
+
+        for (const rule of replacements) {
+          // Skip BE→AE rules when the toggle is off
+          if (rule.origin === "be-ae" && !beAeMode) continue;
+          for (const m of line.matchAll(rule.pattern)) {
+            considerMatch(rule, m.index, m.index + m[0].length);
+          }
+        }
+
+        // Second pass for partially transliterated input (e.g. "mahā-viśvas",
+        // "parabrahmane" among otherwise-IAST words): fold diacritics back to
+        // romanized spelling and match the guide against that. Added after the
+        // exact pass so an exact match wins a same-span tie.
+        const { folded, map } = foldDiacritics(line);
+        if (folded !== line) {
+          const isBoundary = (i) => i === 0 || i === folded.length || map[i] !== map[i - 1];
+          for (const rule of foldedRules(replacements)) {
+            for (const m of folded.matchAll(rule.pattern)) {
+              const fs = m.index;
+              const fe = fs + m[0].length;
+              // Only accept matches that start and end on whole original characters
+              if (!isBoundary(fs) || !isBoundary(fe)) continue;
+              considerMatch(rule, map[fs], map[fe]);
+            }
           }
         }
 
