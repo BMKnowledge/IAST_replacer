@@ -592,6 +592,11 @@
         color: var(--c-text-sub);
         margin-bottom: 10px;
       }
+      #md-report .md-progress {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
       #md-report .md-table-wrap {
         overflow-x: auto;
         border: 1px solid var(--c-border-input);
@@ -619,12 +624,32 @@
         vertical-align: top;
         font-family: "Georgia", "Times New Roman", serif;
       }
-      #md-report td.md-line {
+      #md-report td.md-count,
+      #md-report .md-line,
+      #md-report summary {
         font-family:
           -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
         color: var(--c-text-muted);
+      }
+      #md-report td.md-count {
         text-align: right;
         white-space: nowrap;
+      }
+      #md-report summary {
+        cursor: pointer;
+        font-size: 0.8125rem;
+      }
+      #md-report details ul {
+        list-style: none;
+        margin-top: 6px;
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+      #md-report .md-line {
+        display: inline-block;
+        min-width: 3.5em;
+        font-size: 0.75rem;
       }
       #md-report td.md-found {
         color: var(--c-mark-unk-fg);
@@ -2751,11 +2776,25 @@
         });
       }
 
-      function checkMarkdown(text) {
+      // Wait until the browser has painted a frame.
+      const nextPaint = () =>
+        new Promise((r) => requestAnimationFrame(() => setTimeout(r)));
+
+      // Runs in chunks, yielding to the browser between them so the page stays
+      // responsive. onProgress(fraction) is called at each yield; returning
+      // false aborts the check (returns null).
+      async function checkMarkdown(text, onProgress) {
         const lines = text.normalize("NFC").split(/\r?\n/);
         const masked = maskMarkdown(lines);
         const issues = [];
-        masked.forEach((line, i) => {
+        let chunkStart = performance.now();
+        for (let i = 0; i < masked.length; i++) {
+          if (performance.now() - chunkStart > 40) {
+            if (onProgress(i / masked.length) === false) return null;
+            await nextPaint();
+            chunkStart = performance.now();
+          }
+          const line = masked[i];
           const { matches } = applyReplacementsToLine(line, replacements, false, null);
           for (const m of matches) {
             if (m.matched === m.newSpelling) continue;
@@ -2771,34 +2810,65 @@
               text: lines[i],
             });
           }
-        });
+        }
         return issues;
       }
 
       function renderMdReport(fileName, issues) {
         const CTX = 50;
-        const terms = new Set(issues.map((i) => i.found.toLowerCase()));
+        const MAX_LINES_SHOWN = 10;
+
+        // Bundle identical found → IAST pairs, most frequent first.
+        const groups = new Map();
+        for (const issue of issues) {
+          const key = `${issue.found}\u0000${issue.fix}`;
+          if (!groups.has(key)) groups.set(key, []);
+          groups.get(key).push(issue);
+        }
+        const bundles = [...groups.values()].sort(
+          (a, b) => b.length - a.length || a[0].found.localeCompare(b[0].found),
+        );
+
         const lineCount = new Set(issues.map((i) => i.line)).size;
         const summary = issues.length
           ? `${issues.length} occurrence${issues.length === 1 ? "" : "s"} not in IAST · ` +
-            `${terms.size} distinct term${terms.size === 1 ? "" : "s"} · ` +
+            `${bundles.length} distinct term${bundles.length === 1 ? "" : "s"} · ` +
             `${lineCount} line${lineCount === 1 ? "" : "s"}`
           : "No issues found — every guide term is already in IAST.";
-        const rows = issues
-          .map(({ line, start, end, found, fix, text }) => {
-            const from = Math.max(0, start - CTX);
-            const to = Math.min(text.length, end + CTX);
-            const context =
-              (from > 0 ? "…" : "") +
-              escapeHtml(text.slice(from, start)) +
-              `<mark>${escapeHtml(found)}</mark>` +
-              escapeHtml(text.slice(end, to)) +
-              (to < text.length ? "…" : "");
+
+        const contextHtml = ({ start, end, found, text }) => {
+          const from = Math.max(0, start - CTX);
+          const to = Math.min(text.length, end + CTX);
+          return (
+            (from > 0 ? "…" : "") +
+            escapeHtml(text.slice(from, start)) +
+            `<mark>${escapeHtml(found)}</mark>` +
+            escapeHtml(text.slice(end, to)) +
+            (to < text.length ? "…" : "")
+          );
+        };
+
+        const rows = bundles
+          .map((bundle) => {
+            const { found, fix } = bundle[0];
+            const lines = [...new Set(bundle.map((i) => i.line))];
+            const more = lines.length - MAX_LINES_SHOWN;
+            const linesLabel =
+              (lines.length === 1 ? "Line " : "Lines ") +
+              lines.slice(0, MAX_LINES_SHOWN).join(", ") +
+              (more > 0 ? ` +${more} more` : "");
+            const occurrences = bundle
+              .map(
+                (i) =>
+                  `<li><span class="md-line">${i.line}</span>${contextHtml(i)}</li>`,
+              )
+              .join("");
             return (
-              `<tr><td class="md-line">${line}</td>` +
-              `<td class="md-found">${escapeHtml(found)}</td>` +
+              `<tr><td class="md-found">${escapeHtml(found)}</td>` +
               `<td class="md-fix">${escapeHtml(fix)}</td>` +
-              `<td class="md-context">${context}</td></tr>`
+              `<td class="md-count">${bundle.length}</td>` +
+              `<td class="md-context"><details><summary>${linesLabel}</summary>` +
+              `<ul>${occurrences}</ul></details></td></tr>`
             );
           })
           .join("");
@@ -2807,16 +2877,30 @@
           `<div class="md-summary">${summary}</div>` +
           (issues.length
             ? `<div class="md-table-wrap"><table><thead><tr>` +
-              `<th>Line</th><th>Found</th><th>IAST</th><th>Context</th>` +
+              `<th>Found</th><th>IAST</th><th>Count</th><th>Where</th>` +
               `</tr></thead><tbody>${rows}</tbody></table></div>`
             : "");
         mdReportEl.style.display = "block";
         mdReportEl.scrollIntoView({ behavior: "smooth", block: "start" });
       }
 
+      let mdRun = 0; // a newer file supersedes a check still in progress
       async function handleMdFile(file) {
         if (!file || !replacements) return;
-        renderMdReport(file.name, checkMarkdown(await file.text()));
+        const run = ++mdRun;
+        mdReportEl.innerHTML =
+          `<h2>IAST check — ${escapeHtml(file.name)}</h2>` +
+          `<div class="md-summary md-progress"><span class="spinner"></span>` +
+          `<span>Checking…</span></div>`;
+        mdReportEl.style.display = "block";
+        mdReportEl.scrollIntoView({ behavior: "smooth", block: "start" });
+        const progressText = mdReportEl.querySelector(".md-progress span:last-child");
+        await nextPaint();
+        const issues = await checkMarkdown(await file.text(), (fraction) => {
+          if (run !== mdRun) return false;
+          progressText.textContent = `Checking… ${Math.round(fraction * 100)}%`;
+        });
+        if (issues && run === mdRun) renderMdReport(file.name, issues);
       }
 
       mdBtn.addEventListener("click", () => mdFileInput.click());
