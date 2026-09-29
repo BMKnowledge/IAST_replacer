@@ -587,6 +587,11 @@
         color: var(--c-text-muted);
         margin-bottom: 6px;
       }
+      #md-report h3 {
+        font-size: 0.8125rem;
+        font-weight: 600;
+        margin: 16px 0 6px;
+      }
       #md-report .md-summary {
         font-size: 0.8125rem;
         color: var(--c-text-sub);
@@ -3027,55 +3032,69 @@
           );
         };
 
-        const rows = bundles
-          .map((bundle) => {
-            const { found, fix } = bundle[0];
-            // Line numbers grouped by file: "Lines 3, 12" for a .md file,
-            // "ch1.tex: 3, 12 · ch2.tex: 7" for a project.
-            const linesByFile = new Map();
-            for (const i of bundle) {
-              if (!linesByFile.has(i.file)) linesByFile.set(i.file, new Set());
-              linesByFile.get(i.file).add(i.line);
-            }
-            let shown = 0;
-            let more = 0;
-            const parts = [];
-            for (const [file, lineSet] of linesByFile) {
-              const lines = [...lineSet];
-              const take = lines.slice(0, Math.max(0, MAX_LINES_SHOWN - shown));
-              shown += take.length;
-              more += lines.length - take.length;
-              if (take.length)
-                parts.push((file ? `${escapeHtml(file)}: ` : "") + take.join(", "));
-            }
-            const linesLabel =
-              (isProject ? "" : shown + more === 1 ? "Line " : "Lines ") +
-              parts.join(" · ") +
-              (more > 0 ? ` +${more} more` : "");
-            const occurrences = bundle
-              .map(
-                (i) =>
-                  `<li><span class="md-line">${i.file ? `${escapeHtml(i.file)}:` : ""}${i.line}</span>` +
-                  `${contextHtml(i)}</li>`,
-              )
-              .join("");
-            return (
-              `<tr><td class="md-found">${escapeHtml(found)}</td>` +
-              `<td class="md-fix${bundle[0].beAe ? " md-be-ae" : ""}">${escapeHtml(fix)}</td>` +
-              `<td class="md-count">${bundle.length}</td>` +
-              `<td class="md-context"><details><summary>${linesLabel}</summary>` +
-              `<ul>${occurrences}</ul></details></td></tr>`
-            );
-          })
-          .join("");
+        const rowHtml = (bundle) => {
+          const { found, fix } = bundle[0];
+          // Line numbers grouped by file: "Lines 3, 12" for a .md file,
+          // "ch1.tex: 3, 12 · ch2.tex: 7" for a project.
+          const linesByFile = new Map();
+          for (const i of bundle) {
+            if (!linesByFile.has(i.file)) linesByFile.set(i.file, new Set());
+            linesByFile.get(i.file).add(i.line);
+          }
+          let shown = 0;
+          let more = 0;
+          const parts = [];
+          for (const [file, lineSet] of linesByFile) {
+            const lines = [...lineSet];
+            const take = lines.slice(0, Math.max(0, MAX_LINES_SHOWN - shown));
+            shown += take.length;
+            more += lines.length - take.length;
+            if (take.length)
+              parts.push((file ? `${escapeHtml(file)}: ` : "") + take.join(", "));
+          }
+          const linesLabel =
+            (isProject ? "" : shown + more === 1 ? "Line " : "Lines ") +
+            parts.join(" · ") +
+            (more > 0 ? ` +${more} more` : "");
+          const occurrences = bundle
+            .map(
+              (i) =>
+                `<li><span class="md-line">${i.file ? `${escapeHtml(i.file)}:` : ""}${i.line}</span>` +
+                `${contextHtml(i)}</li>`,
+            )
+            .join("");
+          return (
+            `<tr><td class="md-found">${escapeHtml(found)}</td>` +
+            `<td class="md-fix${bundle[0].beAe ? " md-be-ae" : ""}">${escapeHtml(fix)}</td>` +
+            `<td class="md-count">${bundle.length}</td>` +
+            `<td class="md-context"><details><summary>${linesLabel}</summary>` +
+            `<ul>${occurrences}</ul></details></td></tr>`
+          );
+        };
+        const tableHtml = (list, fixHeader) =>
+          `<div class="md-table-wrap"><table><thead><tr>` +
+          `<th>Found</th><th>${fixHeader}</th><th>Count</th><th>Where</th>` +
+          `</tr></thead><tbody>${list.map(rowHtml).join("")}</tbody></table></div>`;
+
+        // With AE spelling on, IAST and AE issues get separate, labelled tables
+        // so each count in the summary maps to a visible list.
+        const iastBundles = bundles.filter((b) => !b[0].beAe);
+        const aeBundles = bundles.filter((b) => b[0].beAe);
+        const heading = (text, count, cls = "") =>
+          beAeMode ? `<h3${cls}>${text} (${count})</h3>` : "";
+        const tables =
+          (iastBundles.length
+            ? heading("Not in IAST", iastCount) + tableHtml(iastBundles, "IAST")
+            : "") +
+          (aeBundles.length
+            ? heading("Not in AE spelling", beAeCount, ' class="md-be-ae"') +
+              tableHtml(aeBundles, "AE spelling")
+            : "");
+
         mdReportEl.innerHTML =
           `<h2>IAST check — ${escapeHtml(fileName)}</h2>` +
           `<div class="md-summary">${summary}</div>` +
-          (issues.length
-            ? `<div class="md-table-wrap"><table><thead><tr>` +
-              `<th>Found</th><th>${beAeMode ? "Should be" : "IAST"}</th><th>Count</th><th>Where</th>` +
-              `</tr></thead><tbody>${rows}</tbody></table></div>`
-            : "");
+          tables;
         mdReportEl.style.display = "block";
         mdReportEl.scrollIntoView({ behavior: "smooth", block: "start" });
       }
