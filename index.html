@@ -559,7 +559,7 @@
 
       /* Shown while a file is dragged over the page */
       body.md-dragging::after {
-        content: "Drop .md file to check IAST";
+        content: "Drop .md or .zip file to check IAST";
         position: fixed;
         inset: 12px;
         display: flex;
@@ -649,6 +649,7 @@
       #md-report .md-line {
         display: inline-block;
         min-width: 3.5em;
+        padding-right: 8px;
         font-size: 0.75rem;
       }
       #md-report td.md-found {
@@ -842,8 +843,8 @@
           <span class="toggle-track"><span class="toggle-thumb"></span></span>
           <span>AE spelling</span>
         </label>
-        <button id="md-btn" disabled title="Or drag and drop a .md file onto the page">Check .md file</button>
-        <input type="file" id="md-file" accept=".md,.markdown,text/markdown" hidden />
+        <button id="md-btn" disabled title="Check a Markdown file or a zipped LaTeX project — or drag and drop one onto the page">Check .md / .zip</button>
+        <input type="file" id="md-file" accept=".md,.markdown,text/markdown,.zip,application/zip" hidden />
       </div>
 
       <div class="panel">
@@ -2841,9 +2842,10 @@
         }
       });
 
-      // ── Markdown file check ──────────────────────────────────────────────────
-      // Lists every place in an uploaded .md file where a guide term is not
-      // spelled in its IAST form. Code, inline code and URLs are ignored.
+      // ── File check (.md / zipped LaTeX project) ──────────────────────────────
+      // Lists every place in an uploaded .md file, or in the .tex files of a
+      // zipped LaTeX project, where a guide term is not spelled in its IAST
+      // form. Code, comments, URLs and similar non-prose regions are ignored.
       const mdBtn = document.getElementById("md-btn");
       const mdFileInput = document.getElementById("md-file");
       const mdReportEl = document.getElementById("md-report");
@@ -2865,48 +2867,120 @@
         });
       }
 
+      // Commands whose first argument is a key, path or code — never prose.
+      // Mirrors PROTECTED_COMMANDS in iast_replacer.py, plus \begin/\end and
+      // common cross-reference and citation variants.
+      const LATEX_PROTECTED_RE = new RegExp(
+        String.raw`\\(?:label|ref|pageref|eqref|autoref|cref|Cref|nameref|` +
+          String.raw`cite|citep|citet|nocite|parencite|textcite|autocite|footcite|` +
+          String.raw`url|href|includegraphics|graphicspath|input|include|subfile|` +
+          String.raw`bibliography|bibliographystyle|addbibresource|usepackage|` +
+          String.raw`documentclass|newcommand|renewcommand|def|let|hypersetup|begin|end)` +
+          String.raw`\*?(?:\[[^\]]*\])*\{[^}]*\}`,
+        "g",
+      );
+      // Mirrors PROTECTED_ENVIRONMENTS in iast_replacer.py.
+      const LATEX_VERBATIM_BEGIN_RE =
+        /\\begin\{(verbatim|lstlisting|minted|comment|filecontents|Verbatim|BVerbatim|LVerbatim)\*?\}/;
+
+      function maskLatex(lines) {
+        let verbatimEnd = null; // "\end{env" that closes the current verbatim block
+        return lines.map((line) => {
+          const blank = " ".repeat(line.length);
+          const commentAt = _eqFindTexCommentIndex(line);
+          const code = commentAt < 0 ? line : line.slice(0, commentAt);
+          if (!verbatimEnd) {
+            const m = code.match(LATEX_VERBATIM_BEGIN_RE);
+            if (m) verbatimEnd = `\\end{${m[1]}`;
+          }
+          if (verbatimEnd) {
+            if (line.includes(verbatimEnd)) verbatimEnd = null;
+            return blank;
+          }
+          return (code + blank.slice(code.length))
+            .replace(LATEX_PROTECTED_RE, (m) => " ".repeat(m.length))
+            .replace(/\\(?:[A-Za-z@]+|.)/g, (m) => " ".repeat(m.length)) // command names, \%, \\ …
+            .replace(/~/g, " "); // non-breaking space, so "Śrī~Kṛṣṇa" matches phrases
+        });
+      }
+
+      // The .tex files of a zipped LaTeX project as [{ path, text }], sorted by
+      // path. A top-level folder shared by all files (as created when zipping a
+      // folder) is dropped from the paths.
+      async function readTexFilesFromZip(file) {
+        const zip = await JSZip.loadAsync(await file.arrayBuffer());
+        const entries = Object.values(zip.files).filter(
+          (e) =>
+            !e.dir &&
+            /\.tex$/i.test(e.name) &&
+            !/^__MACOSX\/|(^|\/)\./.test(e.name), // macOS metadata, hidden files
+        );
+        const top = entries[0]?.name.match(/^[^/]+\//)?.[0];
+        const strip = top && entries.every((e) => e.name.startsWith(top)) ? top.length : 0;
+        const files = await Promise.all(
+          entries.map(async (e) => ({
+            path: e.name.slice(strip),
+            text: await e.async("string"),
+          })),
+        );
+        return files.sort((a, b) =>
+          a.path.localeCompare(b.path, undefined, { numeric: true }),
+        );
+      }
+
       // Wait until the browser has painted a frame.
       const nextPaint = () =>
         new Promise((r) => requestAnimationFrame(() => setTimeout(r)));
 
-      // Runs in chunks, yielding to the browser between them so the page stays
-      // responsive. onProgress(fraction) is called at each yield; returning
-      // false aborts the check (returns null).
-      async function checkMarkdown(text, beAeMode, onProgress) {
+      // file is the path shown in the report (null for a single .md file);
+      // mask blanks out the regions that must not be checked.
+      function prepareDoc(file, text, mask) {
         const lines = text.normalize("NFC").split(/\r?\n/);
-        const masked = maskMarkdown(lines);
+        return { file, lines, masked: mask(lines) };
+      }
+
+      // Runs in chunks, yielding to the browser between them so the page stays
+      // responsive. onProgress(fraction, file) is called at each yield;
+      // returning false aborts the check (returns null).
+      async function checkDocs(docs, beAeMode, onProgress) {
+        const total = docs.reduce((n, d) => n + d.lines.length, 0);
         const issues = [];
+        let done = 0;
         let chunkStart = performance.now();
-        for (let i = 0; i < masked.length; i++) {
-          if (performance.now() - chunkStart > 40) {
-            if (onProgress(i / masked.length) === false) return null;
-            await nextPaint();
-            chunkStart = performance.now();
-          }
-          const line = masked[i];
-          const { matches } = applyReplacementsToLine(
-            line, replacements, false, null, false, beAeMode,
-          );
-          for (const m of matches) {
-            if (m.matched === m.newSpelling) continue;
-            // Ignore pure sentence-start capitalisation (e.g. a hard-wrapped
-            // line beginning with "bhakti") — that is not an IAST issue.
-            if (m.matched === matchCase(m.matched, m.rule.right, false)) continue;
-            issues.push({
-              line: i + 1,
-              start: m.start,
-              end: m.end,
-              found: m.matched,
-              fix: m.newSpelling,
-              beAe: m.rule.origin === "be-ae",
-              text: lines[i],
-            });
+        for (const { file, lines, masked } of docs) {
+          for (let i = 0; i < lines.length; i++, done++) {
+            if (performance.now() - chunkStart > 40) {
+              if (onProgress(done / total, file) === false) return null;
+              await nextPaint();
+              chunkStart = performance.now();
+            }
+            const { matches } = applyReplacementsToLine(
+              masked[i], replacements, false, null, false, beAeMode,
+            );
+            for (const m of matches) {
+              if (m.matched === m.newSpelling) continue;
+              // Ignore pure sentence-start capitalisation (e.g. a hard-wrapped
+              // line beginning with "bhakti") — that is not an IAST issue.
+              if (m.matched === matchCase(m.matched, m.rule.right, false)) continue;
+              issues.push({
+                file,
+                line: i + 1,
+                start: m.start,
+                end: m.end,
+                found: m.matched,
+                fix: m.newSpelling,
+                beAe: m.rule.origin === "be-ae",
+                text: lines[i],
+              });
+            }
           }
         }
         return issues;
       }
 
-      function renderMdReport(fileName, issues, beAeMode) {
+      // texFileCount: number of .tex files checked for a zipped LaTeX project;
+      // undefined for a single .md file.
+      function renderMdReport(fileName, issues, beAeMode, texFileCount) {
         const CTX = 50;
         const MAX_LINES_SHOWN = 10;
 
@@ -2921,19 +2995,25 @@
           (a, b) => b.length - a.length || a[0].found.localeCompare(b[0].found),
         );
 
-        const lineCount = new Set(issues.map((i) => i.line)).size;
+        const isProject = texFileCount !== undefined;
+        const texFiles = `${texFileCount} .tex file${texFileCount === 1 ? "" : "s"}`;
+        const lineCount = new Set(issues.map((i) => `${i.file}\u0000${i.line}`)).size;
+        const fileCount = new Set(issues.map((i) => i.file)).size;
         const beAeCount = issues.filter((i) => i.beAe).length;
         const iastCount = issues.length - beAeCount;
-        const summary = issues.length
-          ? `${iastCount} occurrence${iastCount === 1 ? "" : "s"} not in IAST · ` +
-            (beAeMode
-              ? `<span class="md-be-ae">${beAeCount} not in AE spelling</span> · `
-              : "") +
-            `${bundles.length} distinct term${bundles.length === 1 ? "" : "s"} · ` +
-            `${lineCount} line${lineCount === 1 ? "" : "s"}`
-          : beAeMode
-            ? "No issues found — every guide term is already in IAST and AE spelling."
-            : "No issues found — every guide term is already in IAST.";
+        const summary =
+          texFileCount === 0
+            ? "No .tex files found in the project."
+            : issues.length
+              ? `${iastCount} occurrence${iastCount === 1 ? "" : "s"} not in IAST · ` +
+                (beAeMode
+                  ? `<span class="md-be-ae">${beAeCount} not in AE spelling</span> · `
+                  : "") +
+                `${bundles.length} distinct term${bundles.length === 1 ? "" : "s"} · ` +
+                `${lineCount} line${lineCount === 1 ? "" : "s"}` +
+                (isProject ? ` in ${fileCount} of ${texFiles}` : "")
+              : `No issues found${isProject ? ` in ${texFiles}` : ""} — ` +
+                `every guide term is already in IAST${beAeMode ? " and AE spelling" : ""}.`;
 
         const contextHtml = ({ start, end, found, text }) => {
           const from = Math.max(0, start - CTX);
@@ -2950,16 +3030,33 @@
         const rows = bundles
           .map((bundle) => {
             const { found, fix } = bundle[0];
-            const lines = [...new Set(bundle.map((i) => i.line))];
-            const more = lines.length - MAX_LINES_SHOWN;
+            // Line numbers grouped by file: "Lines 3, 12" for a .md file,
+            // "ch1.tex: 3, 12 · ch2.tex: 7" for a project.
+            const linesByFile = new Map();
+            for (const i of bundle) {
+              if (!linesByFile.has(i.file)) linesByFile.set(i.file, new Set());
+              linesByFile.get(i.file).add(i.line);
+            }
+            let shown = 0;
+            let more = 0;
+            const parts = [];
+            for (const [file, lineSet] of linesByFile) {
+              const lines = [...lineSet];
+              const take = lines.slice(0, Math.max(0, MAX_LINES_SHOWN - shown));
+              shown += take.length;
+              more += lines.length - take.length;
+              if (take.length)
+                parts.push((file ? `${escapeHtml(file)}: ` : "") + take.join(", "));
+            }
             const linesLabel =
-              (lines.length === 1 ? "Line " : "Lines ") +
-              lines.slice(0, MAX_LINES_SHOWN).join(", ") +
+              (isProject ? "" : shown + more === 1 ? "Line " : "Lines ") +
+              parts.join(" · ") +
               (more > 0 ? ` +${more} more` : "");
             const occurrences = bundle
               .map(
                 (i) =>
-                  `<li><span class="md-line">${i.line}</span>${contextHtml(i)}</li>`,
+                  `<li><span class="md-line">${i.file ? `${escapeHtml(i.file)}:` : ""}${i.line}</span>` +
+                  `${contextHtml(i)}</li>`,
               )
               .join("");
             return (
@@ -2984,34 +3081,47 @@
       }
 
       let mdRun = 0; // a newer file supersedes a check still in progress
-      async function handleMdFile(file) {
+      async function handleCheckFile(file) {
         if (!file || !replacements) return;
         const run = ++mdRun;
         const beAeMode = beAeToggle.checked;
+        const isZip = /\.zip$/i.test(file.name);
         mdReportEl.innerHTML =
           `<h2>IAST check — ${escapeHtml(file.name)}</h2>` +
           `<div class="md-summary md-progress"><span class="spinner"></span>` +
           `<span>Checking…</span></div>`;
         mdReportEl.style.display = "block";
         mdReportEl.scrollIntoView({ behavior: "smooth", block: "start" });
-        const progressText = mdReportEl.querySelector(".md-progress span:last-child");
+        const progressEl = mdReportEl.querySelector(".md-progress");
+        const progressText = progressEl.querySelector("span:last-child");
         await nextPaint();
-        const issues = await checkMarkdown(await file.text(), beAeMode, (fraction) => {
+        let docs;
+        try {
+          docs = isZip
+            ? (await readTexFilesFromZip(file)).map((f) => prepareDoc(f.path, f.text, maskLatex))
+            : [prepareDoc(null, await file.text(), maskMarkdown)];
+        } catch (err) {
+          if (run === mdRun) progressEl.textContent = `Could not read ${file.name}: ${err.message}`;
+          return;
+        }
+        const issues = await checkDocs(docs, beAeMode, (fraction, path) => {
           if (run !== mdRun) return false;
-          progressText.textContent = `Checking… ${Math.round(fraction * 100)}%`;
+          progressText.textContent =
+            `Checking… ${Math.round(fraction * 100)}%` + (path ? ` · ${path}` : "");
         });
-        if (issues && run === mdRun) renderMdReport(file.name, issues, beAeMode);
+        if (issues && run === mdRun)
+          renderMdReport(file.name, issues, beAeMode, isZip ? docs.length : undefined);
       }
 
       mdBtn.addEventListener("click", () => mdFileInput.click());
       mdFileInput.addEventListener("change", () => {
         const file = mdFileInput.files[0];
         mdFileInput.value = ""; // allow re-selecting the same file
-        handleMdFile(file);
+        handleCheckFile(file);
       });
 
-      // Drag and drop a .md file anywhere on the page. Only file drags are
-      // intercepted, so dragging text into the input box still works.
+      // Drag and drop a .md or .zip file anywhere on the page. Only file drags
+      // are intercepted, so dragging text into the input box still works.
       const hasFiles = (e) => e.dataTransfer?.types.includes("Files");
       let dragDepth = 0;
       document.addEventListener("dragenter", (e) => {
@@ -3032,7 +3142,7 @@
         dragDepth = 0;
         document.body.classList.remove("md-dragging");
         const file = e.dataTransfer.files[0];
-        if (file && /\.(md|markdown)$/i.test(file.name)) handleMdFile(file);
+        if (file && /\.(md|markdown|zip)$/i.test(file.name)) handleCheckFile(file);
       });
 
       // ── Dark mode toggle ─────────────────────────────────────────────────────
