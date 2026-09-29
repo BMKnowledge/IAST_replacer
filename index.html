@@ -536,6 +536,114 @@
         left: 17px;
       }
 
+      /* ── Markdown file report ──────────────────────────────────────────────── */
+      button#md-btn {
+        background: none;
+        border: 1px solid var(--c-btn-border);
+        border-radius: 6px;
+        padding: 8px 14px;
+        font-size: 0.8125rem;
+        color: var(--c-btn-text);
+        cursor: pointer;
+        margin-top: 14px;
+        white-space: nowrap;
+      }
+      button#md-btn:hover {
+        border-color: var(--c-focus);
+        color: var(--c-btn-hover);
+      }
+      button#md-btn:disabled {
+        opacity: 0.4;
+        cursor: not-allowed;
+      }
+
+      /* Shown while a file is dragged over the page */
+      body.md-dragging::after {
+        content: "Drop .md file to check IAST";
+        position: fixed;
+        inset: 12px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border: 2px dashed var(--c-focus);
+        border-radius: 12px;
+        background: color-mix(in srgb, var(--c-bg) 85%, transparent);
+        color: var(--c-text);
+        font-size: 1.1rem;
+        font-weight: 600;
+        pointer-events: none;
+        z-index: 10;
+      }
+
+      #md-report {
+        display: none;
+        padding: 0 32px 28px;
+      }
+      #md-report h2 {
+        font-size: 0.75rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.07em;
+        color: var(--c-text-muted);
+        margin-bottom: 6px;
+      }
+      #md-report .md-summary {
+        font-size: 0.8125rem;
+        color: var(--c-text-sub);
+        margin-bottom: 10px;
+      }
+      #md-report .md-table-wrap {
+        overflow-x: auto;
+        border: 1px solid var(--c-border-input);
+        border-radius: 6px;
+        background: var(--c-surface);
+      }
+      #md-report table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.875rem;
+      }
+      #md-report th {
+        text-align: left;
+        font-size: 0.75rem;
+        font-weight: 600;
+        color: var(--c-text-muted);
+        background: var(--c-surface-alt);
+        padding: 8px 12px;
+        border-bottom: 1px solid var(--c-border-input);
+        white-space: nowrap;
+      }
+      #md-report td {
+        padding: 6px 12px;
+        border-bottom: 1px solid var(--c-border-subtle);
+        vertical-align: top;
+        font-family: "Georgia", "Times New Roman", serif;
+      }
+      #md-report td.md-line {
+        font-family:
+          -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        color: var(--c-text-muted);
+        text-align: right;
+        white-space: nowrap;
+      }
+      #md-report td.md-found {
+        color: var(--c-mark-unk-fg);
+        white-space: nowrap;
+      }
+      #md-report td.md-fix {
+        color: var(--c-mark-fg);
+        white-space: nowrap;
+      }
+      #md-report td.md-context {
+        color: var(--c-text-sub);
+      }
+      #md-report td.md-context mark {
+        background: var(--c-mark-unk-bg);
+        color: var(--c-mark-unk-fg);
+        border-radius: 2px;
+        padding: 0 1px;
+      }
+
       /* ── Footer ────────────────────────────────────────────────────────────── */
       footer {
         text-align: center;
@@ -616,6 +724,9 @@
         }
         #status-bar {
           padding: 8px 16px;
+        }
+        #md-report {
+          padding: 0 16px 16px;
         }
       }
     </style>
@@ -701,6 +812,8 @@
           <span class="toggle-track"><span class="toggle-thumb"></span></span>
           <span>AE spelling</span>
         </label>
+        <button id="md-btn" disabled title="Or drag and drop a .md file onto the page">Check .md file</button>
+        <input type="file" id="md-file" accept=".md,.markdown,text/markdown" hidden />
       </div>
 
       <div class="panel">
@@ -714,6 +827,8 @@
         </div>
       </div>
     </main>
+
+    <section id="md-report"></section>
 
     <footer>
       <div class="request-term">
@@ -1972,6 +2087,7 @@
           beAeCount,
           unknowns: unknowns.map((u) => u.word),
           changedWords,
+          matches: kept,
         };
       }
 
@@ -2417,6 +2533,7 @@
             false,
           );
           convertBtn.disabled = false;
+          mdBtn.disabled = false;
         } catch (err) {
           setStatus("error", `Failed to load IAST.xlsx: ${err.message}`, false);
         }
@@ -2608,6 +2725,130 @@
         } else {
           document.execCommand("insertText", false, text);
         }
+      });
+
+      // ── Markdown file check ──────────────────────────────────────────────────
+      // Lists every place in an uploaded .md file where a guide term is not
+      // spelled in its IAST form. Code, inline code and URLs are ignored.
+      const mdBtn = document.getElementById("md-btn");
+      const mdFileInput = document.getElementById("md-file");
+      const mdReportEl = document.getElementById("md-report");
+
+      // Blank out regions that must not be checked, preserving line length so
+      // match offsets still line up with the original text.
+      function maskMarkdown(lines) {
+        let inFence = false;
+        return lines.map((line) => {
+          if (/^\s*(```|~~~)/.test(line)) {
+            inFence = !inFence;
+            return " ".repeat(line.length);
+          }
+          if (inFence) return " ".repeat(line.length);
+          return line.replace(
+            /`[^`]*`|\]\([^)]*\)|<https?:[^>]*>|https?:\/\/\S+/g,
+            (m) => " ".repeat(m.length),
+          );
+        });
+      }
+
+      function checkMarkdown(text) {
+        const lines = text.normalize("NFC").split(/\r?\n/);
+        const masked = maskMarkdown(lines);
+        const issues = [];
+        masked.forEach((line, i) => {
+          const { matches } = applyReplacementsToLine(line, replacements, false, null);
+          for (const m of matches) {
+            if (m.matched === m.newSpelling) continue;
+            // Ignore pure sentence-start capitalisation (e.g. a hard-wrapped
+            // line beginning with "bhakti") — that is not an IAST issue.
+            if (m.matched === matchCase(m.matched, m.rule.right, false)) continue;
+            issues.push({
+              line: i + 1,
+              start: m.start,
+              end: m.end,
+              found: m.matched,
+              fix: m.newSpelling,
+              text: lines[i],
+            });
+          }
+        });
+        return issues;
+      }
+
+      function renderMdReport(fileName, issues) {
+        const CTX = 50;
+        const terms = new Set(issues.map((i) => i.found.toLowerCase()));
+        const lineCount = new Set(issues.map((i) => i.line)).size;
+        const summary = issues.length
+          ? `${issues.length} occurrence${issues.length === 1 ? "" : "s"} not in IAST · ` +
+            `${terms.size} distinct term${terms.size === 1 ? "" : "s"} · ` +
+            `${lineCount} line${lineCount === 1 ? "" : "s"}`
+          : "No issues found — every guide term is already in IAST.";
+        const rows = issues
+          .map(({ line, start, end, found, fix, text }) => {
+            const from = Math.max(0, start - CTX);
+            const to = Math.min(text.length, end + CTX);
+            const context =
+              (from > 0 ? "…" : "") +
+              escapeHtml(text.slice(from, start)) +
+              `<mark>${escapeHtml(found)}</mark>` +
+              escapeHtml(text.slice(end, to)) +
+              (to < text.length ? "…" : "");
+            return (
+              `<tr><td class="md-line">${line}</td>` +
+              `<td class="md-found">${escapeHtml(found)}</td>` +
+              `<td class="md-fix">${escapeHtml(fix)}</td>` +
+              `<td class="md-context">${context}</td></tr>`
+            );
+          })
+          .join("");
+        mdReportEl.innerHTML =
+          `<h2>IAST check — ${escapeHtml(fileName)}</h2>` +
+          `<div class="md-summary">${summary}</div>` +
+          (issues.length
+            ? `<div class="md-table-wrap"><table><thead><tr>` +
+              `<th>Line</th><th>Found</th><th>IAST</th><th>Context</th>` +
+              `</tr></thead><tbody>${rows}</tbody></table></div>`
+            : "");
+        mdReportEl.style.display = "block";
+        mdReportEl.scrollIntoView({ behavior: "smooth", block: "start" });
+      }
+
+      async function handleMdFile(file) {
+        if (!file || !replacements) return;
+        renderMdReport(file.name, checkMarkdown(await file.text()));
+      }
+
+      mdBtn.addEventListener("click", () => mdFileInput.click());
+      mdFileInput.addEventListener("change", () => {
+        const file = mdFileInput.files[0];
+        mdFileInput.value = ""; // allow re-selecting the same file
+        handleMdFile(file);
+      });
+
+      // Drag and drop a .md file anywhere on the page. Only file drags are
+      // intercepted, so dragging text into the input box still works.
+      const hasFiles = (e) => e.dataTransfer?.types.includes("Files");
+      let dragDepth = 0;
+      document.addEventListener("dragenter", (e) => {
+        if (!hasFiles(e)) return;
+        dragDepth++;
+        document.body.classList.add("md-dragging");
+      });
+      document.addEventListener("dragleave", (e) => {
+        if (!hasFiles(e)) return;
+        if (--dragDepth === 0) document.body.classList.remove("md-dragging");
+      });
+      document.addEventListener("dragover", (e) => {
+        if (hasFiles(e)) e.preventDefault();
+      });
+      document.addEventListener("drop", (e) => {
+        if (!hasFiles(e)) return;
+        e.preventDefault();
+        dragDepth = 0;
+        document.body.classList.remove("md-dragging");
+        const file = e.dataTransfer.files[0];
+        if (file && /\.(md|markdown)$/i.test(file.name)) handleMdFile(file);
       });
 
       // ── Dark mode toggle ─────────────────────────────────────────────────────
