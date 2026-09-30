@@ -2785,9 +2785,9 @@
           }
 
           // Preserve line breaks from the preview, but remove outer whitespace.
-          const html = clone.innerHTML.trim().replace(/\n/g, "<br>");
-
-          return `<div style="font-family: Georgia, 'Times New Roman', serif; line-height: 1.7;">${html}</div>`;
+          // No font or spacing styles, so pasted text takes on the formatting of
+          // the destination; only italics (<em>) are carried over.
+          return clone.innerHTML.trim().replace(/\n/g, "<br>");
         }
 
         function flashCopied() {
