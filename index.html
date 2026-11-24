@@ -1756,7 +1756,7 @@
         return false;
       }
 
-      function matchCase(original, replacement, sentenceStart) {
+      function matchCase(original, replacement, sentenceStart, keepCapital = false) {
         if (!original || !replacement) return replacement;
         // ALL CAPS (e.g. headings)
         if (
@@ -1766,14 +1766,16 @@
         ) {
           return replacement.toUpperCase();
         }
-        // Capitalise the output when the matched text itself starts with an
-        // uppercase letter (e.g. "Bhakti" after a quote) OR we're at a
-        // sentence start and the user happened to type lowercase (e.g.
-        // "bhakti" at position 0 still gets "Bhakti" in the output).
+        // Capitalise the output at a sentence start (even if the user typed
+        // lowercase: "bhakti" at position 0 → "Bhakti"), or when the matched
+        // text is capitalised right after an opening quote/bracket/brace
+        // (keepCapital, e.g. "Bhakti is love" in quotes, \section{Bhakti}).
+        // A capitalised word in the middle of a sentence ("through Japam,
+        // Bhajan") takes the guide's casing instead.
         // The `!== toLowerCase()` guard ensures the first char is actually
         // an alphabetic letter, not a digit or punctuation.
         const firstIsUpper = original[0] !== original[0].toLowerCase();
-        if (sentenceStart || firstIsUpper) {
+        if (sentenceStart || (firstIsUpper && keepCapital)) {
           return replacement[0].toUpperCase() + replacement.slice(1);
         }
         return replacement;
@@ -1905,6 +1907,7 @@
               matched,
               targetRight,
               isAtSentenceStart(line, start, end),
+              /["'“‘«„(\[{]$/.test(line.slice(0, start)),
             );
 
             // Determine whether the match falls inside an existing italic command.
